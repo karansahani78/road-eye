@@ -1,0 +1,14 @@
+package com.roadeye.auth.entity;
+
+public enum Role {
+    SUPER_ADMIN,
+    SYSTEM_ADMIN,
+    TRAFFIC_ADMIN,
+    TRAFFIC_OFFICER,
+    SURVEILLANCE_OPERATOR,
+    CAMERA_OPERATOR,
+    VIOLATION_REVIEWER,
+    TRAFFIC_ANALYST,
+    AUDITOR,
+    READ_ONLY_USER
+}

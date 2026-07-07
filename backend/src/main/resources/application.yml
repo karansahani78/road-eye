@@ -1,0 +1,92 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: roadeye
+  datasource:
+    url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/roadeye}
+    username: ${SPRING_DATASOURCE_USERNAME:roadeye}
+    password: ${SPRING_DATASOURCE_PASSWORD:roadeye_dev}
+    driver-class-name: org.postgresql.Driver
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+  jpa:
+    hibernate:
+      ddl-auto: validate
+    show-sql: false
+    properties:
+      hibernate:
+        dialect: org.hibernate.dialect.PostgreSQLDialect
+        jdbc:
+          time_zone: UTC
+        format_sql: true
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+    baseline-on-migrate: true
+  kafka:
+    bootstrap-servers: ${SPRING_KAFKA_BOOTSTRAP_SERVERS:localhost:9092}
+    consumer:
+      group-id: roadeye-group
+      auto-offset-reset: earliest
+      key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
+      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      properties:
+        spring.json.trusted.packages: com.roadeye.*
+    producer:
+      key-serializer: org.apache.kafka.common.serialization.StringSerializer
+      value-serializer: org.springframework.kafka.support.serializer.JsonSerializer
+  servlet:
+    multipart:
+      max-file-size: 100MB
+      max-request-size: 100MB
+  jackson:
+    serialization:
+      write-dates-as-timestamps: false
+    date-format: yyyy-MM-dd'T'HH:mm:ss'Z'
+    time-zone: UTC
+
+minio:
+  endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
+  access-key: ${MINIO_ACCESS_KEY:roadeye}
+  secret-key: ${MINIO_SECRET_KEY:roadeye_dev}
+  bucket: ${MINIO_BUCKET:roadeye-evidence}
+
+jwt:
+  secret: ${JWT_SECRET:change-this-to-a-secure-random-secret-in-production}
+  expiration: ${JWT_EXPIRATION:86400000}
+
+ai:
+  service:
+    url: ${AI_SERVICE_URL:http://localhost:8000}
+
+kafka:
+  topics:
+    camera-health: camera-health
+    vehicle-observations: vehicle-observations
+    plate-recognitions: plate-recognitions
+    speed-estimations: speed-estimations
+    violation-candidates: violation-candidates
+    evidence-created: evidence-created
+
+logging:
+  level:
+    com.roadeye: DEBUG
+    org.springframework.security: INFO
+    org.springframework.kafka: INFO
+
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+  health:
+    db:
+      enabled: true
+    kafka:
+      enabled: true
