@@ -2,11 +2,14 @@ import React, { useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import api from '../services/api';
 import { Alert, ApiResponse, PagedResponse } from '../types';
+import { useAlertWebSocket } from '../hooks/useAlertWebSocket';
 
 const AlertsPage: React.FC = () => {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(0);
   const [severityFilter, setSeverityFilter] = useState('');
+
+  useAlertWebSocket();
 
   const { data, isLoading } = useQuery({
     queryKey: ['alerts', page, severityFilter],

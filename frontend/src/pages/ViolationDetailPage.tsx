@@ -3,6 +3,8 @@ import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { violationService } from '../services/violationService';
 import { ViolationEvidence } from '../types';
+import AuthenticatedEvidenceImage from '../components/AuthenticatedEvidenceImage';
+import api from '../services/api';
 
 const statusTransitions: Record<string, string[]> = {
   'PENDING_REVIEW': ['UNDER_REVIEW', 'REJECTED'],
@@ -43,6 +45,20 @@ const ViolationDetailPage: React.FC = () => {
       alert('Status updated');
     },
   });
+
+  const handleDownload = async (evidenceId: string) => {
+    try {
+      const response = await api.get(`/evidence/${evidenceId}/download`, { responseType: 'blob' });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `evidence-${evidenceId}`;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      alert('Failed to download evidence');
+    }
+  };
 
   const handleStatusUpdate = () => {
     if (selectedStatus) {
@@ -114,11 +130,7 @@ const ViolationDetailPage: React.FC = () => {
                 {evidenceItems.map((ev: ViolationEvidence) => (
                   <div key={ev.id} className="evidence-item">
                     {ev.evidenceType === 'IMAGE' || ev.evidenceType === 'FRAME' ? (
-                      <img src={`/api/v1/evidence/${ev.id}/file`}
-                        alt={ev.evidenceType}
-                        className="evidence-thumb"
-                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
-                      />
+                      <AuthenticatedEvidenceImage evidence={ev} />
                     ) : (
                       <div className="evidence-icon">{ev.evidenceType}</div>
                     )}
@@ -134,9 +146,8 @@ const ViolationDetailPage: React.FC = () => {
                         </span>
                       )}
                       {ev.objectKey && (
-                        <a href={`/api/v1/evidence/${ev.id}/download`}
-                          className="evidence-download"
-                          download>Download</a>
+                        <button type="button" className="evidence-download btn-sm btn-secondary"
+                          onClick={() => handleDownload(ev.id)}>Download</button>
                       )}
                     </div>
                     {ev.metadata && (

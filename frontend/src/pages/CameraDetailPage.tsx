@@ -14,6 +14,17 @@ const CameraDetailPage: React.FC = () => {
     algorithmVersion: 'roadeye-cv-v1',
     calibrationData: '{}',
   });
+  const [editing, setEditing] = useState(false);
+  const [editData, setEditData] = useState({
+    name: '',
+    description: '',
+    location: '',
+    latitude: 0,
+    longitude: 0,
+    direction: '',
+    processingFps: 15,
+    active: true,
+  });
 
   const { data: camera, isLoading } = useQuery({
     queryKey: ['camera', id],
@@ -39,8 +50,41 @@ const CameraDetailPage: React.FC = () => {
     mutationFn: () => cameraService.testConnection(id!),
   });
 
+  const updateMutation = useMutation({
+    mutationFn: (data: any) => cameraService.update(id!, data),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['camera', id] });
+      queryClient.invalidateQueries({ queryKey: ['cameras'] });
+      setEditing(false);
+      alert('Camera updated');
+    },
+  });
+
   if (isLoading) return <div className="loading">Loading...</div>;
   if (!camera) return <div className="error">Camera not found</div>;
+
+  const startEditing = () => {
+    setEditData({
+      name: camera.name,
+      description: camera.description || '',
+      location: camera.location || '',
+      latitude: camera.latitude || 0,
+      longitude: camera.longitude || 0,
+      direction: camera.direction || '',
+      processingFps: camera.processingFps || 15,
+      active: camera.active,
+    });
+    setEditing(true);
+  };
+
+  const handleUpdate = (e: React.FormEvent) => {
+    e.preventDefault();
+    updateMutation.mutate({
+      cameraCode: camera.cameraCode,
+      sourceType: camera.sourceType,
+      ...editData,
+    });
+  };
 
   const handleCalibrate = (e: React.FormEvent) => {
     e.preventDefault();
@@ -60,15 +104,56 @@ const CameraDetailPage: React.FC = () => {
       <div className="detail-grid">
         <div className="detail-card">
           <h3>Camera Information</h3>
-          <dl>
-            <dt>Code</dt><dd>{camera.cameraCode}</dd>
-            <dt>Type</dt><dd>{camera.sourceType}</dd>
-            <dt>Location</dt><dd>{camera.location || '-'}</dd>
-            <dt>Coordinates</dt><dd>{camera.latitude}, {camera.longitude}</dd>
-            <dt>Direction</dt><dd>{camera.direction || '-'}</dd>
-            <dt>Processing FPS</dt><dd>{camera.processingFps}</dd>
-            <dt>Resolution</dt><dd>{camera.resolution || '-'}</dd>
-          </dl>
+          {editing ? (
+            <form onSubmit={handleUpdate}>
+              <div className="form-group">
+                <label>Name</label>
+                <input value={editData.name} onChange={(e) => setEditData({ ...editData, name: e.target.value })} required />
+              </div>
+              <div className="form-group">
+                <label>Location</label>
+                <input value={editData.location} onChange={(e) => setEditData({ ...editData, location: e.target.value })} />
+              </div>
+              <div className="form-group">
+                <label>Latitude</label>
+                <input type="number" step="any" value={editData.latitude}
+                  onChange={(e) => setEditData({ ...editData, latitude: parseFloat(e.target.value) || 0 })} />
+              </div>
+              <div className="form-group">
+                <label>Longitude</label>
+                <input type="number" step="any" value={editData.longitude}
+                  onChange={(e) => setEditData({ ...editData, longitude: parseFloat(e.target.value) || 0 })} />
+              </div>
+              <div className="form-group">
+                <label>FPS</label>
+                <input type="number" value={editData.processingFps}
+                  onChange={(e) => setEditData({ ...editData, processingFps: parseInt(e.target.value) || 15 })} />
+              </div>
+              <div className="form-group">
+                <label>
+                  <input type="checkbox" checked={editData.active}
+                    onChange={(e) => setEditData({ ...editData, active: e.target.checked })} />
+                  {' '}Active
+                </label>
+              </div>
+              <button type="submit" className="btn-primary" disabled={updateMutation.isPending}>Save</button>
+              <button type="button" className="btn-secondary" onClick={() => setEditing(false)}>Cancel</button>
+            </form>
+          ) : (
+            <>
+              <dl>
+                <dt>Code</dt><dd>{camera.cameraCode}</dd>
+                <dt>Type</dt><dd>{camera.sourceType}</dd>
+                <dt>Location</dt><dd>{camera.location || '-'}</dd>
+                <dt>Coordinates</dt><dd>{camera.latitude}, {camera.longitude}</dd>
+                <dt>Direction</dt><dd>{camera.direction || '-'}</dd>
+                <dt>Processing FPS</dt><dd>{camera.processingFps}</dd>
+                <dt>Resolution</dt><dd>{camera.resolution || '-'}</dd>
+                <dt>Active</dt><dd>{camera.active ? 'Yes' : 'No'}</dd>
+              </dl>
+              <button className="btn-secondary" onClick={startEditing}>Edit Camera</button>
+            </>
+          )}
         </div>
 
         <div className="detail-card">

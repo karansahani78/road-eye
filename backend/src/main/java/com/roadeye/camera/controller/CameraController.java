@@ -118,7 +118,7 @@ public class CameraController {
 
     @GetMapping("/{id}/calibration")
     public ResponseEntity<ApiResponse<CameraCalibrationResponse>> getCalibration(@PathVariable UUID id) {
-        CameraCalibrationResponse response = cameraService.getCalibration(id);
+        CameraCalibrationResponse response = cameraService.getCalibration(id).orElse(null);
         return ResponseEntity.ok(ApiResponse.success(response));
     }
 

@@ -17,8 +17,8 @@ export const violationService = {
     return response.data.data;
   },
 
-  getEvidence: async (id: string): Promise<any> => {
-    const response = await api.get(`/violations/${id}/evidence`);
-    return response.data;
+  getEvidence: async (id: string): Promise<any[]> => {
+    const response = await api.get<ApiResponse<any[]>>(`/violations/${id}/evidence`);
+    return response.data.data;
   },
 };

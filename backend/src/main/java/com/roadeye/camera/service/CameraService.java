@@ -24,6 +24,7 @@ import java.net.URI;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 @Service
@@ -168,10 +169,9 @@ public class CameraService {
         return cameraHealthEventRepository.findByCameraIdOrderByRecordedAtDesc(cameraId, pageable);
     }
 
-    public CameraCalibrationResponse getCalibration(UUID cameraId) {
-        CameraCalibration calibration = cameraCalibrationRepository.findByCameraIdAndActiveTrue(cameraId)
-                .orElseThrow(() -> new ResourceNotFoundException("CameraCalibration", "cameraId", cameraId));
-        return mapToCalibrationResponse(calibration);
+    public Optional<CameraCalibrationResponse> getCalibration(UUID cameraId) {
+        return cameraCalibrationRepository.findByCameraIdAndActiveTrue(cameraId)
+                .map(this::mapToCalibrationResponse);
     }
 
     public CameraCalibrationResponse createCalibration(UUID cameraId, CameraCalibrationRequest request, String calibratedBy) {

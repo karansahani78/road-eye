@@ -42,8 +42,8 @@ const SystemHealthPage: React.FC = () => {
       <div className="info-card">
         <h3>Application Info</h3>
         <dl>
-          <dt>Name</dt><dd>{info.name || info.application?.name || 'RoadEye'}</dd>
-          <dt>Version</dt><dd>{info.version || info.application?.version || '0.1.0'}</dd>
+          <dt>Name</dt><dd>{typeof info.application === 'string' ? info.application : info.name || 'RoadEye'}</dd>
+          <dt>Version</dt><dd>{info.version || '0.1.0'}</dd>
         </dl>
       </div>
     </div>

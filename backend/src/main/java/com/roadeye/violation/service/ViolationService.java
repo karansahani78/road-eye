@@ -1,6 +1,8 @@
 package com.roadeye.violation.service;
 
+import com.roadeye.camera.repository.CameraRepository;
 import com.roadeye.shared.ResourceNotFoundException;
+import com.roadeye.violation.dto.ViolationResponse;
 import com.roadeye.violation.entity.Violation;
 import com.roadeye.violation.entity.ViolationEvidence;
 import com.roadeye.violation.entity.ViolationReview;
@@ -23,33 +25,38 @@ public class ViolationService {
     private final ViolationRepository violationRepository;
     private final ViolationEvidenceRepository evidenceRepository;
     private final ViolationReviewRepository reviewRepository;
+    private final CameraRepository cameraRepository;
 
     public ViolationService(ViolationRepository violationRepository,
                             ViolationEvidenceRepository evidenceRepository,
-                            ViolationReviewRepository reviewRepository) {
+                            ViolationReviewRepository reviewRepository,
+                            CameraRepository cameraRepository) {
         this.violationRepository = violationRepository;
         this.evidenceRepository = evidenceRepository;
         this.reviewRepository = reviewRepository;
+        this.cameraRepository = cameraRepository;
     }
 
     @Transactional(readOnly = true)
-    public Page<Violation> getViolations(String status, String type, String cameraId, Pageable pageable) {
+    public Page<ViolationResponse> getViolations(String status, String type, String cameraId, Pageable pageable) {
+        Page<Violation> page;
         if (status != null) {
-            return violationRepository.findByStatus(status, pageable);
+            page = violationRepository.findByStatus(status, pageable);
+        } else if (type != null) {
+            page = violationRepository.findByViolationType(type, pageable);
+        } else if (cameraId != null) {
+            page = violationRepository.findByCameraId(cameraId, pageable);
+        } else {
+            page = violationRepository.findAll(pageable);
         }
-        if (type != null) {
-            return violationRepository.findByViolationType(type, pageable);
-        }
-        if (cameraId != null) {
-            return violationRepository.findByCameraId(cameraId, pageable);
-        }
-        return violationRepository.findAll(pageable);
+        return page.map(this::mapToResponse);
     }
 
     @Transactional(readOnly = true)
-    public Violation getViolation(UUID id) {
-        return violationRepository.findById(id)
+    public ViolationResponse getViolation(UUID id) {
+        Violation violation = violationRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Violation", "id", id));
+        return mapToResponse(violation);
     }
 
     public Violation createViolation(Violation violation) {
@@ -59,8 +66,9 @@ public class ViolationService {
         return violationRepository.save(violation);
     }
 
-    public Violation updateStatus(UUID id, String newStatus, String comment, String reviewer) {
-        Violation violation = getViolation(id);
+    public ViolationResponse updateStatus(UUID id, String newStatus, String comment, String reviewer) {
+        Violation violation = violationRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Violation", "id", id));
         String previousStatus = violation.getStatus();
 
         ViolationReview review = new ViolationReview();
@@ -76,7 +84,7 @@ public class ViolationService {
         if (comment != null) {
             violation.setNotes(comment);
         }
-        return violationRepository.save(violation);
+        return mapToResponse(violationRepository.save(violation));
     }
 
     @Transactional(readOnly = true)
@@ -86,5 +94,42 @@ public class ViolationService {
 
     public ViolationEvidence addEvidence(ViolationEvidence evidence) {
         return evidenceRepository.save(evidence);
+    }
+
+    private ViolationResponse mapToResponse(Violation violation) {
+        String cameraName = null;
+        if (violation.getCameraId() != null) {
+            try {
+                cameraName = cameraRepository.findById(UUID.fromString(violation.getCameraId()))
+                        .map(c -> c.getName())
+                        .orElse(null);
+            } catch (IllegalArgumentException ignored) {
+                // cameraId may not be a UUID in legacy data
+            }
+        }
+
+        String evidenceId = evidenceRepository.findByViolationId(violation.getId().toString()).stream()
+                .findFirst()
+                .map(e -> e.getId().toString())
+                .orElse(null);
+
+        return ViolationResponse.builder()
+                .id(violation.getId())
+                .cameraId(violation.getCameraId())
+                .cameraName(cameraName)
+                .timestamp(violation.getViolatedAt())
+                .violationType(violation.getViolationType())
+                .confidence(violation.getConfidence())
+                .status(violation.getStatus())
+                .vehicleCategory(violation.getVehicleCategory())
+                .plateText(violation.getPlateText())
+                .normalizedPlate(violation.getNormalizedPlate())
+                .plateCountry(violation.getPlateCountry())
+                .speedKmh(violation.getSpeedKmh())
+                .speedLimit(violation.getSpeedLimit())
+                .trackId(violation.getTrackId())
+                .evidenceId(evidenceId)
+                .createdAt(violation.getCreatedAt())
+                .build();
     }
 }

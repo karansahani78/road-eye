@@ -2,7 +2,7 @@ package com.roadeye.violation.controller;
 
 import com.roadeye.shared.ApiResponse;
 import com.roadeye.shared.PagedResponse;
-import com.roadeye.violation.entity.Violation;
+import com.roadeye.violation.dto.ViolationResponse;
 import com.roadeye.violation.entity.ViolationEvidence;
 import com.roadeye.violation.service.ViolationService;
 import org.springframework.data.domain.Page;
@@ -25,13 +25,13 @@ public class ViolationController {
     }
 
     @GetMapping
-    public ResponseEntity<ApiResponse<PagedResponse<Violation>>> getViolations(
+    public ResponseEntity<ApiResponse<PagedResponse<ViolationResponse>>> getViolations(
             @RequestParam(required = false) String status,
             @RequestParam(required = false) String type,
             @RequestParam(required = false) String cameraId,
             Pageable pageable) {
-        Page<Violation> page = violationService.getViolations(status, type, cameraId, pageable);
-        PagedResponse<Violation> response = PagedResponse.<Violation>builder()
+        Page<ViolationResponse> page = violationService.getViolations(status, type, cameraId, pageable);
+        PagedResponse<ViolationResponse> response = PagedResponse.<ViolationResponse>builder()
                 .content(page.getContent())
                 .page(page.getNumber())
                 .size(page.getSize())
@@ -44,17 +44,17 @@ public class ViolationController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<ApiResponse<Violation>> getViolation(@PathVariable UUID id) {
+    public ResponseEntity<ApiResponse<ViolationResponse>> getViolation(@PathVariable UUID id) {
         return ResponseEntity.ok(ApiResponse.success(violationService.getViolation(id)));
     }
 
     @PatchMapping("/{id}/status")
-    public ResponseEntity<ApiResponse<Violation>> updateStatus(
+    public ResponseEntity<ApiResponse<ViolationResponse>> updateStatus(
             @PathVariable UUID id,
             @RequestBody StatusUpdateRequest request,
             Authentication auth) {
         String reviewer = auth != null ? auth.getName() : "system";
-        Violation updated = violationService.updateStatus(id, request.getStatus(), request.getComment(), reviewer);
+        ViolationResponse updated = violationService.updateStatus(id, request.getStatus(), request.getComment(), reviewer);
         return ResponseEntity.ok(ApiResponse.success(updated, "Status updated to " + request.getStatus()));
     }
 

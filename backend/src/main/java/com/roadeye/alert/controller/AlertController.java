@@ -1,5 +1,6 @@
 package com.roadeye.alert.controller;
 
+import com.roadeye.alert.dto.AlertResponse;
 import com.roadeye.alert.entity.Alert;
 import com.roadeye.alert.service.AlertService;
 import com.roadeye.shared.ApiResponse;
@@ -23,14 +24,14 @@ public class AlertController {
     }
 
     @GetMapping
-    public ResponseEntity<ApiResponse<PagedResponse<Alert>>> getAlerts(
+    public ResponseEntity<ApiResponse<PagedResponse<AlertResponse>>> getAlerts(
             @RequestParam(required = false) String type,
             @RequestParam(required = false) String severity,
             @RequestParam(required = false) String cameraId,
             @RequestParam(required = false) Boolean acknowledged,
             Pageable pageable) {
-        Page<Alert> page = alertService.getAlerts(type, severity, cameraId, acknowledged, pageable);
-        PagedResponse<Alert> response = PagedResponse.<Alert>builder()
+        Page<AlertResponse> page = alertService.getAlerts(type, severity, cameraId, acknowledged, pageable);
+        PagedResponse<AlertResponse> response = PagedResponse.<AlertResponse>builder()
                 .content(page.getContent())
                 .page(page.getNumber())
                 .size(page.getSize())
@@ -43,7 +44,7 @@ public class AlertController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<ApiResponse<Alert>> getAlert(@PathVariable UUID id) {
+    public ResponseEntity<ApiResponse<AlertResponse>> getAlert(@PathVariable UUID id) {
         return ResponseEntity.ok(ApiResponse.success(alertService.getAlert(id)));
     }
 
@@ -54,15 +55,15 @@ public class AlertController {
     }
 
     @PatchMapping("/{id}/acknowledge")
-    public ResponseEntity<ApiResponse<Alert>> acknowledgeAlert(@PathVariable UUID id, Authentication auth) {
+    public ResponseEntity<ApiResponse<AlertResponse>> acknowledgeAlert(@PathVariable UUID id, Authentication auth) {
         String user = auth != null ? auth.getName() : "system";
-        Alert updated = alertService.acknowledgeAlert(id, user);
+        AlertResponse updated = alertService.acknowledgeAlert(id, user);
         return ResponseEntity.ok(ApiResponse.success(updated, "Alert acknowledged"));
     }
 
     @PatchMapping("/{id}/resolve")
-    public ResponseEntity<ApiResponse<Alert>> resolveAlert(@PathVariable UUID id) {
-        Alert updated = alertService.resolveAlert(id);
+    public ResponseEntity<ApiResponse<AlertResponse>> resolveAlert(@PathVariable UUID id) {
+        AlertResponse updated = alertService.resolveAlert(id);
         return ResponseEntity.ok(ApiResponse.success(updated, "Alert resolved"));
     }
 }

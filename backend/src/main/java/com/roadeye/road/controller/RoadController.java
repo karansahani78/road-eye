@@ -1,5 +1,6 @@
 package com.roadeye.road.controller;
 
+import com.roadeye.road.dto.RoadResponse;
 import com.roadeye.road.entity.Road;
 import com.roadeye.road.repository.RoadRepository;
 import com.roadeye.shared.ApiResponse;
@@ -23,10 +24,10 @@ public class RoadController {
     }
 
     @GetMapping
-    public ResponseEntity<ApiResponse<PagedResponse<Road>>> getAllRoads(Pageable pageable) {
+    public ResponseEntity<ApiResponse<PagedResponse<RoadResponse>>> getAllRoads(Pageable pageable) {
         Page<Road> page = roadRepository.findAll(pageable);
-        PagedResponse<Road> response = PagedResponse.<Road>builder()
-                .content(page.getContent())
+        PagedResponse<RoadResponse> response = PagedResponse.<RoadResponse>builder()
+                .content(page.getContent().stream().map(this::mapToResponse).toList())
                 .page(page.getNumber())
                 .size(page.getSize())
                 .totalElements(page.getTotalElements())
@@ -38,25 +39,25 @@ public class RoadController {
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<ApiResponse<Road>> getRoad(@PathVariable UUID id) {
+    public ResponseEntity<ApiResponse<RoadResponse>> getRoad(@PathVariable UUID id) {
         Road road = roadRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Road", "id", id));
-        return ResponseEntity.ok(ApiResponse.success(road));
+        return ResponseEntity.ok(ApiResponse.success(mapToResponse(road)));
     }
 
     @PostMapping
-    public ResponseEntity<ApiResponse<Road>> createRoad(@RequestBody Road road) {
+    public ResponseEntity<ApiResponse<RoadResponse>> createRoad(@RequestBody Road road) {
         Road saved = roadRepository.save(road);
-        return ResponseEntity.ok(ApiResponse.success(saved, "Road created successfully"));
+        return ResponseEntity.ok(ApiResponse.success(mapToResponse(saved), "Road created successfully"));
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<ApiResponse<Road>> updateRoad(@PathVariable UUID id, @RequestBody Road road) {
+    public ResponseEntity<ApiResponse<RoadResponse>> updateRoad(@PathVariable UUID id, @RequestBody Road road) {
         roadRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Road", "id", id));
         road.setId(id);
         Road saved = roadRepository.save(road);
-        return ResponseEntity.ok(ApiResponse.success(saved, "Road updated successfully"));
+        return ResponseEntity.ok(ApiResponse.success(mapToResponse(saved), "Road updated successfully"));
     }
 
     @DeleteMapping("/{id}")
@@ -65,5 +66,18 @@ public class RoadController {
                 .orElseThrow(() -> new ResourceNotFoundException("Road", "id", id));
         roadRepository.deleteById(id);
         return ResponseEntity.ok(ApiResponse.success(null, "Road deleted successfully"));
+    }
+
+    private RoadResponse mapToResponse(Road road) {
+        return RoadResponse.builder()
+                .id(road.getId())
+                .name(road.getName())
+                .code(road.getCode())
+                .roadType(road.getRoadType())
+                .province(road.getProvince())
+                .district(road.getDistrict())
+                .length(road.getLength())
+                .speedLimit(road.getDefaultSpeedLimit())
+                .build();
     }
 }

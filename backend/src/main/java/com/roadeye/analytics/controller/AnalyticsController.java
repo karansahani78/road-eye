@@ -87,7 +87,9 @@ public class AnalyticsController {
             if (hourEnd.isAfter(now)) hourEnd = now;
             long count = vehicleObservationRepository.countByObservedAtBetween(cursor, hourEnd);
             Map<String, Object> point = new LinkedHashMap<>();
+            String dateLabel = cursor.truncatedTo(java.time.temporal.ChronoUnit.DAYS).toString().substring(0, 10);
             point.put("timestamp", cursor.toString());
+            point.put("date", dateLabel);
             point.put("count", count);
             result.add(point);
             cursor = hourEnd;
@@ -125,10 +127,14 @@ public class AnalyticsController {
         while (cursor.isBefore(now)) {
             Instant dayEnd = cursor.plus(Duration.ofDays(1));
             if (dayEnd.isAfter(now)) dayEnd = now;
-            long count = violationRepository.countByViolatedAtBetween(cursor, dayEnd);
+            long overspeeding = violationRepository.countByViolationTypeAndViolatedAtBetween("OVERSPEEDING", cursor, dayEnd);
+            long total = violationRepository.countByViolatedAtBetween(cursor, dayEnd);
+            long other = Math.max(0, total - overspeeding);
             Map<String, Object> point = new LinkedHashMap<>();
-            point.put("date", cursor.truncatedTo(java.time.temporal.ChronoUnit.DAYS).toString());
-            point.put("count", count);
+            point.put("date", cursor.truncatedTo(java.time.temporal.ChronoUnit.DAYS).toString().substring(0, 10));
+            point.put("count", total);
+            point.put("overspeeding", overspeeding);
+            point.put("other", other);
             result.add(point);
             cursor = dayEnd;
         }
