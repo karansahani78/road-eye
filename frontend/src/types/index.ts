@@ -151,6 +151,19 @@ export interface DashboardStats {
   activeCriticalAlerts: number;
 }
 
+export interface ViolationEvidence {
+  id: string;
+  violationId: string;
+  evidenceType: string;
+  filePath: string;
+  bucketName: string;
+  objectKey: string;
+  fileSize: number;
+  contentType: string;
+  metadata: string;
+  createdAt: string;
+}
+
 export interface AuditLog {
   id: string;
   actor: string;

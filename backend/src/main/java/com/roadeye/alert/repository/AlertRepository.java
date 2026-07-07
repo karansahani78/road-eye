@@ -11,4 +11,6 @@ public interface AlertRepository extends JpaRepository<Alert, UUID> {
     Page<Alert> findBySeverity(String severity, Pageable pageable);
     Page<Alert> findByCameraId(String cameraId, Pageable pageable);
     Page<Alert> findByAcknowledged(boolean acknowledged, Pageable pageable);
+
+    long countBySeverityAndAcknowledged(String severity, boolean acknowledged);
 }

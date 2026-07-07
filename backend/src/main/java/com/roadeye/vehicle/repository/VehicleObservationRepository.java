@@ -10,4 +10,8 @@ public interface VehicleObservationRepository extends JpaRepository<VehicleObser
     List<VehicleObservation> findByCameraIdAndObservedAtBetween(String cameraId, Instant start, Instant end);
     List<VehicleObservation> findByTrackId(Integer trackId);
     List<VehicleObservation> findByCategory(String category);
+
+    long countByCategory(String category);
+
+    long countByObservedAtBetween(Instant start, Instant end);
 }

@@ -21,6 +21,8 @@
         <java.version>21</java.version>
         <mapstruct.version>1.5.5.Final</mapstruct.version>
         <testcontainers.version>1.19.8</testcontainers.version>
+        <flyway.version>10.10.0</flyway.version>
+        <kafka.version>3.7.1</kafka.version>
     </properties>
 
     <dependencies>
@@ -55,6 +57,11 @@
             <groupId>org.springframework.kafka</groupId>
             <artifactId>spring-kafka</artifactId>
         </dependency>
+        <dependency>
+            <groupId>org.apache.kafka</groupId>
+            <artifactId>kafka-clients</artifactId>
+            <version>3.7.1</version>
+        </dependency>
 
         <!-- Flyway -->
         <dependency>
@@ -64,6 +71,7 @@
         <dependency>
             <groupId>org.flywaydb</groupId>
             <artifactId>flyway-database-postgresql</artifactId>
+            <version>${flyway.version}</version>
         </dependency>
 
         <!-- PostgreSQL -->
@@ -150,11 +158,6 @@
             <groupId>org.testcontainers</groupId>
             <artifactId>kafka</artifactId>
             <version>${testcontainers.version}</version>
-            <scope>test</scope>
-        </dependency>
-        <dependency>
-            <groupId>org.apache.kafka</groupId>
-            <artifactId>kafka-clients</artifactId>
             <scope>test</scope>
         </dependency>
     </dependencies>

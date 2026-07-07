@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { violationService } from '../services/violationService';
+import { ViolationEvidence } from '../types';
 
 const statusTransitions: Record<string, string[]> = {
   'PENDING_REVIEW': ['UNDER_REVIEW', 'REJECTED'],
@@ -22,6 +23,12 @@ const ViolationDetailPage: React.FC = () => {
   const { data: violation, isLoading } = useQuery({
     queryKey: ['violation', id],
     queryFn: () => violationService.getById(id!),
+    enabled: !!id,
+  });
+
+  const { data: evidenceItems } = useQuery({
+    queryKey: ['violation-evidence', id],
+    queryFn: () => violationService.getEvidence(id!),
     enabled: !!id,
   });
 
@@ -100,9 +107,47 @@ const ViolationDetailPage: React.FC = () => {
         </div>
 
         <div className="detail-card full-width">
-          <h3>Evidence</h3>
+          <h3>Evidence ({evidenceItems?.length || 0})</h3>
           <div className="evidence-viewer">
-            <p className="text-muted">Evidence viewer will display annotated frames, vehicle crops, and plate crops.</p>
+            {evidenceItems && evidenceItems.length > 0 ? (
+              <div className="evidence-grid">
+                {evidenceItems.map((ev: ViolationEvidence) => (
+                  <div key={ev.id} className="evidence-item">
+                    {ev.evidenceType === 'IMAGE' || ev.evidenceType === 'FRAME' ? (
+                      <img src={`/api/v1/evidence/${ev.id}/file`}
+                        alt={ev.evidenceType}
+                        className="evidence-thumb"
+                        onError={(e) => { (e.target as HTMLImageElement).style.display = 'none'; }}
+                      />
+                    ) : (
+                      <div className="evidence-icon">{ev.evidenceType}</div>
+                    )}
+                    <div className="evidence-meta">
+                      <span className="evidence-type">{ev.evidenceType}</span>
+                      {ev.fileSize && (
+                        <span className="evidence-size">
+                          {ev.fileSize > 1048576
+                            ? (ev.fileSize / 1048576).toFixed(1) + ' MB'
+                            : ev.fileSize > 1024
+                              ? (ev.fileSize / 1024).toFixed(1) + ' KB'
+                              : ev.fileSize + ' B'}
+                        </span>
+                      )}
+                      {ev.objectKey && (
+                        <a href={`/api/v1/evidence/${ev.id}/download`}
+                          className="evidence-download"
+                          download>Download</a>
+                      )}
+                    </div>
+                    {ev.metadata && (
+                      <pre className="evidence-metadata">{JSON.stringify(JSON.parse(ev.metadata), null, 2)}</pre>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-muted">No evidence available for this violation.</p>
+            )}
           </div>
         </div>
       </div>

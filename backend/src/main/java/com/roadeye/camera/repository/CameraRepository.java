@@ -1,6 +1,7 @@
 package com.roadeye.camera.repository;
 
 import com.roadeye.camera.entity.Camera;
+import com.roadeye.camera.entity.Camera.HealthStatus;
 import org.springframework.data.jpa.repository.JpaRepository;
 import org.springframework.stereotype.Repository;
 
@@ -16,4 +17,6 @@ public interface CameraRepository extends JpaRepository<Camera, UUID> {
     boolean existsByCameraCode(String cameraCode);
 
     List<Camera> findByActiveTrue();
+
+    long countByHealthStatus(HealthStatus healthStatus);
 }

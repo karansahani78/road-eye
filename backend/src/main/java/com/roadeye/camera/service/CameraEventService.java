@@ -65,7 +65,7 @@ public class CameraEventService {
         for (Camera camera : activeCameras) {
             CameraHealthEvent event = new CameraHealthEvent();
             event.setCamera(camera);
-            event.setStatus(camera.getHealthStatus());
+            event.setStatus(camera.getHealthStatus().name());
             event.setRecordedAt(Instant.now());
             healthEventRepository.save(event);
         }

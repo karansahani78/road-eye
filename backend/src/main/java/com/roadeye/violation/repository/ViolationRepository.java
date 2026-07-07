@@ -12,4 +12,10 @@ public interface ViolationRepository extends JpaRepository<Violation, UUID> {
     Page<Violation> findByViolationType(String violationType, Pageable pageable);
     Page<Violation> findByCameraId(String cameraId, Pageable pageable);
     Page<Violation> findByCameraIdAndViolatedAtBetween(String cameraId, Instant start, Instant end, Pageable pageable);
+
+    long countByStatus(String status);
+
+    long countByViolatedAtBetween(Instant start, Instant end);
+
+    long countByViolationTypeAndViolatedAtBetween(String violationType, Instant start, Instant end);
 }

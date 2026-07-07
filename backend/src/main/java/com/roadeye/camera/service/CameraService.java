@@ -18,6 +18,9 @@ import org.springframework.data.domain.Pageable;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
+import java.io.IOException;
+import java.net.Socket;
+import java.net.URI;
 import java.time.Instant;
 import java.util.HashMap;
 import java.util.Map;
@@ -113,10 +116,47 @@ public class CameraService {
         result.put("cameraId", id);
         result.put("cameraCode", camera.getCameraCode());
         result.put("sourceType", camera.getSourceType());
-        result.put("status", "success");
-        result.put("message", "Connection test completed for camera: " + camera.getName());
-        result.put("testedAt", Instant.now());
 
+        String sourceUrl = camera.getSourceUrlEncrypted();
+        String host = null;
+        int port = -1;
+
+        if (sourceUrl != null && !sourceUrl.isBlank()) {
+            try {
+                URI uri = URI.create(sourceUrl);
+                host = uri.getHost();
+                port = uri.getPort();
+                if (port < 0) port = switch (uri.getScheme()) {
+                    case "rtsp" -> 554;
+                    case "http", "https" -> uri.getScheme().equals("https") ? 443 : 80;
+                    default -> -1;
+                };
+            } catch (IllegalArgumentException e) {
+                result.put("status", "error");
+                result.put("message", "Invalid URL: " + e.getMessage());
+                result.put("testedAt", Instant.now());
+                return result;
+            }
+
+            if (host != null && port > 0) {
+                try (Socket s = new Socket(host, port)) {
+                    s.setSoTimeout(5000);
+                    result.put("status", "success");
+                    result.put("message", "Reachable: " + host + ":" + port);
+                } catch (IOException e) {
+                    result.put("status", "unreachable");
+                    result.put("message", host + ":" + port + " - " + e.getMessage());
+                }
+            } else {
+                result.put("status", "unchecked");
+                result.put("message", "Cannot parse host/port from: " + sourceUrl);
+            }
+        } else {
+            result.put("status", "unconfigured");
+            result.put("message", "No source URL configured for camera");
+        }
+
+        result.put("testedAt", Instant.now());
         return result;
     }
 

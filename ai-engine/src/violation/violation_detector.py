@@ -77,6 +77,21 @@ class ViolationDetector:
     def _detect_no_helmet(
             self, tracks: List[Track],
             plate_results: List[PlateResult]) -> List[ViolationCandidate]:
+        """
+        No-helmet detection stub.
+
+        Currently flags all two-wheelers with low confidence because no dedicated
+        helmet detection model (e.g. YOLOv8 fine-tuned on helmet/no-helmet) is
+        deployed. This produces false positives for every motorcycle/scooter/moped.
+
+        To make this production-ready:
+        1. Train/fine-tune a model on helmet vs. no-helmet images
+        2. Replace this stub with actual inference
+        3. Use the helmet model's confidence score instead of the hardcoded value
+
+        The low confidence (0.15) ensures these candidates are deprioritised in
+        the review queue until a proper model is integrated.
+        """
         violations = []
         for track in tracks:
             if track.category in (
@@ -84,13 +99,22 @@ class ViolationDetector:
                     VehicleCategory.SCOOTER,
                     VehicleCategory.MOPED,
             ):
+                logger.warning(
+                    "No-helmet check triggered for track %s (%s) — "
+                    "no dedicated helmet model; confidence set to 0.15",
+                    track.track_id, track.category.value,
+                )
                 violations.append(ViolationCandidate(
                     camera_id="unknown",
                     timestamp=datetime.utcnow(),
                     violation_type=ViolationType.NO_HELMET,
-                    confidence=0.3,
+                    confidence=0.15,
                     track_id=track.track_id,
                     vehicle_category=track.category,
-                    metadata={"note": "basic detection, requires dedicated helmet model"},
+                    metadata={
+                        "detection_method": "category-based-heuristic",
+                        "note": "stub — requires dedicated helmet model",
+                        "requires_human_review": True,
+                    },
                 ))
         return violations

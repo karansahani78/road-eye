@@ -20,10 +20,10 @@ const SystemHealthPage: React.FC = () => {
   const info = infoData?.data?.data || infoData?.data || {};
 
   const healthItems = [
-    { label: 'Database', status: health.database || health.db || 'UNKNOWN' },
-    { label: 'Kafka', status: health.kafka || 'UNKNOWN' },
-    { label: 'MinIO', status: health.minio || health.objectStore || 'UNKNOWN' },
-    { label: 'AI Engine', status: health.aiEngine || health.ai || 'UNKNOWN' },
+    { label: 'Database', status: health.database?.status || 'UNKNOWN' },
+    { label: 'Kafka', status: health.kafka?.status || 'UNKNOWN' },
+    { label: 'MinIO', status: health.minio?.status || 'UNKNOWN' },
+    { label: 'AI Engine', status: health.aiEngine?.status || 'UNKNOWN' },
   ];
 
   return (
