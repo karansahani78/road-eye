@@ -44,6 +44,9 @@ spring:
     multipart:
       max-file-size: 100MB
       max-request-size: 100MB
+  mvc:
+    async:
+      request-timeout: 0
   jackson:
     serialization:
       write-dates-as-timestamps: false

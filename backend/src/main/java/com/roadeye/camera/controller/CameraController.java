@@ -34,6 +34,7 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestTemplate;
 
+import java.io.IOException;
 import java.net.URI;
 import java.util.HashMap;
 import java.util.Map;
@@ -230,6 +231,13 @@ public class CameraController {
             try (var in = URI.create(url).toURL().openStream()) {
                 in.transferTo(outputStream);
                 outputStream.flush();
+            } catch (IOException e) {
+                String msg = e.getMessage() != null ? e.getMessage() : "";
+                if (msg.contains("Broken pipe") || msg.contains("Connection reset") || msg.contains("closed")) {
+                    log.debug("MJPEG stream closed for camera {}: {}", id, msg);
+                } else {
+                    log.warn("MJPEG stream error for camera {}: {}", id, msg);
+                }
             }
         };
         return ResponseEntity.ok()

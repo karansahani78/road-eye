@@ -1,5 +1,6 @@
 package com.roadeye.shared;
 
+import jakarta.servlet.http.HttpServletResponse;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.dao.DataIntegrityViolationException;
@@ -12,6 +13,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.context.request.async.AsyncRequestTimeoutException;
 
 import java.util.stream.Collectors;
 
@@ -72,8 +74,22 @@ public class GlobalExceptionHandler {
                 .body(ApiResponse.error("Resource conflict: " + ex.getMostSpecificCause().getMessage()));
     }
 
+    @ExceptionHandler(AsyncRequestTimeoutException.class)
+    public void handleAsyncRequestTimeout(AsyncRequestTimeoutException ex, HttpServletResponse response) {
+        if (response.isCommitted()) {
+            log.debug("Async request timeout for committed streaming response (client may have disconnected)");
+            return;
+        }
+        log.warn("Async request timeout before response committed");
+        response.setStatus(HttpStatus.SERVICE_UNAVAILABLE.value());
+    }
+
     @ExceptionHandler(Exception.class)
-    public ResponseEntity<ApiResponse<Void>> handleGeneric(Exception ex) {
+    public ResponseEntity<ApiResponse<Void>> handleGeneric(Exception ex, HttpServletResponse response) {
+        if (response.isCommitted()) {
+            log.error("Unhandled exception after response committed (streaming endpoint)", ex);
+            return null;
+        }
         log.error("Unhandled exception", ex);
         return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                 .body(ApiResponse.error("An unexpected error occurred"));
