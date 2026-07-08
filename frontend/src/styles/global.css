@@ -556,3 +556,69 @@ pre { background: #f8fafc; padding: 12px; border-radius: var(--radius); font-siz
 }
 
 .empty-view p { font-size: 14px; }
+
+/* ===== Traffic Intelligence Map ===== */
+.intelligence-map { display: flex; flex-direction: column; height: calc(100vh - 60px); }
+.intelligence-map .page-header {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 10px 20px; background: var(--card-bg);
+  border-bottom: 1px solid var(--border);
+}
+.intelligence-map .page-header h2 { margin: 0; font-size: 18px; }
+.map-controls { display: flex; gap: 8px; align-items: center; }
+.map-body { display: flex; flex: 1; overflow: hidden; position: relative; }
+.map-sidebar {
+  width: 320px; min-width: 320px;
+  background: var(--card-bg);
+  border-right: 1px solid var(--border);
+  display: flex; flex-direction: column;
+  overflow-y: auto;
+  transition: width 0.2s, min-width 0.2s;
+}
+.map-sidebar.closed { width: 0; min-width: 0; overflow: hidden; border: none; }
+.sidebar-section { padding: 12px 16px; border-bottom: 1px solid var(--border); }
+.sidebar-section h3 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.5px; color: var(--text-muted); margin-bottom: 10px; }
+.summary-grid { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+.summary-item { text-align: center; padding: 6px; background: var(--bg); border-radius: 6px; }
+.summary-value { display: block; font-size: 20px; font-weight: 700; line-height: 1.2; }
+.summary-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.3px; }
+.map-search-input {
+  width: 100%; padding: 6px 10px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 13px; margin-bottom: 8px;
+}
+.filter-row { margin-bottom: 8px; }
+.map-filter-select { width: 100%; padding: 6px 10px; border: 1px solid var(--border); border-radius: 6px; font-size: 13px; background: #fff; }
+.filter-toggles { display: flex; gap: 12px; margin-top: 8px; }
+.toggle-label { display: flex; align-items: center; gap: 4px; font-size: 12px; cursor: pointer; }
+.toggle-label input { margin: 0; }
+.cameras-list-section { flex: 1; overflow-y: auto; }
+.cameras-list { display: flex; flex-direction: column; gap: 2px; }
+.camera-list-item {
+  display: flex; align-items: center; gap: 8px;
+  padding: 6px 8px; border-radius: 6px; cursor: pointer;
+  transition: background 0.15s;
+}
+.camera-list-item:hover { background: var(--bg); }
+.camera-list-item.selected { background: #e0e7ff; }
+.camera-list-dot { width: 10px; height: 10px; border-radius: 50%; flex-shrink: 0; }
+.camera-list-info { flex: 1; overflow: hidden; }
+.camera-list-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.camera-list-meta { font-size: 10px; color: var(--text-muted); }
+.camera-list-item .status-badge { font-size: 9px; padding: 1px 6px; flex-shrink: 0; }
+.intelligence-map .map-container { flex: 1; position: relative; }
+.map-loading-overlay {
+  position: absolute; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(255,255,255,0.7);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 1000;
+}
+.map-popup-content { min-width: 200px; }
+.popup-stats { display: flex; gap: 8px; margin: 8px 0; }
+.popup-stat { flex: 1; text-align: center; padding: 6px; background: #f8fafc; border-radius: 6px; }
+.popup-stat-value { display: block; font-size: 16px; font-weight: 700; }
+.popup-stat-label { font-size: 10px; color: var(--text-muted); text-transform: uppercase; }
+
+/* ===== Map Picker ===== */
+.map-picker { height: 250px; border-radius: var(--radius); overflow: hidden; margin: 12px 0; border: 2px solid var(--border); }
+.map-picker .leaflet-container { height: 100%; width: 100%; }
+.coord-display { font-size: 12px; color: var(--text-muted); margin-top: 4px; }

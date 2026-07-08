@@ -18,5 +18,9 @@ public interface CameraRepository extends JpaRepository<Camera, UUID> {
 
     List<Camera> findByActiveTrue();
 
+    List<Camera> findByLatitudeIsNotNullAndLongitudeIsNotNullAndActiveTrue();
+
     long countByHealthStatus(HealthStatus healthStatus);
+
+    long countByLatitudeIsNullAndActiveTrue();
 }

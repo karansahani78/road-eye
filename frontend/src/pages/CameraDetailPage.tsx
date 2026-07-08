@@ -1,6 +1,8 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
+import L from 'leaflet';
 import { cameraService } from '../services/cameraService';
 
 const CameraDetailPage: React.FC = () => {
@@ -25,6 +27,41 @@ const CameraDetailPage: React.FC = () => {
     processingFps: 15,
     active: true,
   });
+
+  const LocationPicker: React.FC<{ lat: number; lng: number; onChange: (lat: number, lng: number) => void }> = ({ lat, lng, onChange }) => {
+    const markerIcon = L.divIcon({
+      className: 'custom-marker-icon',
+      html: `<div style="width:20px;height:20px;background:#1e40af;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.3);"></div>`,
+      iconSize: [20, 20],
+      iconAnchor: [10, 10],
+    });
+
+    const MapClickHandler = () => {
+      useMapEvents({
+        click(e) {
+          onChange(e.latlng.lat, e.latlng.lng);
+        },
+      });
+      return null;
+    };
+
+    const center: [number, number] = (lat !== 0 && lng !== 0) ? [lat, lng] : [27.7172, 85.3240];
+
+    return (
+      <div className="map-picker">
+        <MapContainer center={center} zoom={lat !== 0 ? 15 : 12} className="leaflet-map">
+          <TileLayer
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+          />
+          <MapClickHandler />
+          {lat !== 0 && lng !== 0 && (
+            <Marker position={[lat, lng]} icon={markerIcon} />
+          )}
+        </MapContainer>
+      </div>
+    );
+  };
 
   const { data: camera, isLoading } = useQuery({
     queryKey: ['camera', id],
@@ -129,6 +166,17 @@ const CameraDetailPage: React.FC = () => {
                 <label>Longitude</label>
                 <input type="number" step="any" value={editData.longitude}
                   onChange={(e) => setEditData({ ...editData, longitude: parseFloat(e.target.value) || 0 })} />
+              </div>
+              <div className="form-group full-width">
+                <label>Click on map to set coordinates</label>
+                <LocationPicker
+                  lat={editData.latitude}
+                  lng={editData.longitude}
+                  onChange={(lat, lng) => setEditData(prev => ({ ...prev, latitude: lat, longitude: lng }))}
+                />
+                <div className="coord-display">
+                  Lat: {editData.latitude.toFixed(6)}, Lng: {editData.longitude.toFixed(6)}
+                </div>
               </div>
               <div className="form-group">
                 <label>FPS</label>
