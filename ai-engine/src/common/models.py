@@ -56,13 +56,15 @@ class Track(BaseModel):
     track_id: int
     detections: List[Detection]
     trajectory: List[List[float]]
-    first_seen: Optional[datetime] = None
-    last_seen: Optional[datetime] = None
+    first_seen: Optional[float] = None
+    last_seen: Optional[float] = None
     category: Optional[VehicleCategory] = None
     direction: Optional[str] = None
     confidence: float = 0.0
     lost: bool = False
     completed: bool = False
+    confirmed: bool = False
+    hit_count: int = 0
 
 
 class PlateResult(BaseModel):
@@ -71,6 +73,7 @@ class PlateResult(BaseModel):
     country: str
     country_confidence: float
     ocr_confidence: float
+    track_id: Optional[int] = None
     bbox: Optional[List[float]] = None
     quality_score: Optional[float] = None
     alternatives: Optional[List[str]] = None
@@ -83,6 +86,7 @@ class SpeedMeasurement(BaseModel):
     confidence: float
     distance_m: float
     duration_ms: float
+    measured_at: Optional[datetime] = None
     calibration_version: Optional[str] = None
     algorithm_version: str = "roadeye-cv-v1"
 

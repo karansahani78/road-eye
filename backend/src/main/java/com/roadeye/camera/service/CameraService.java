@@ -2,6 +2,7 @@ package com.roadeye.camera.service;
 
 import com.roadeye.camera.dto.CameraCalibrationRequest;
 import com.roadeye.camera.dto.CameraCalibrationResponse;
+import com.roadeye.camera.dto.CameraHealthEventResponse;
 import com.roadeye.camera.dto.CameraRequest;
 import com.roadeye.camera.dto.CameraResponse;
 import com.roadeye.camera.entity.Camera;
@@ -92,9 +93,13 @@ public class CameraService {
 
     @Transactional(readOnly = true)
     public CameraResponse getCamera(UUID id) {
-        Camera camera = cameraRepository.findById(id)
-                .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", id));
+        Camera camera = getCameraEntity(id);
         return mapToCameraResponse(camera);
+    }
+
+    public Camera getCameraEntity(UUID id) {
+        return cameraRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", id));
     }
 
     @Transactional(readOnly = true)
@@ -162,11 +167,28 @@ public class CameraService {
     }
 
     @Transactional(readOnly = true)
-    public Page<CameraHealthEvent> getCameraHealth(UUID cameraId, Pageable pageable) {
+    public Page<CameraHealthEventResponse> getCameraHealth(UUID cameraId, Pageable pageable) {
         if (!cameraRepository.existsById(cameraId)) {
             throw new ResourceNotFoundException("Camera", "id", cameraId);
         }
-        return cameraHealthEventRepository.findByCameraIdOrderByRecordedAtDesc(cameraId, pageable);
+        return cameraHealthEventRepository.findByCameraIdOrderByRecordedAtDesc(cameraId, pageable)
+                .map(this::mapToHealthEventResponse);
+    }
+
+    private CameraHealthEventResponse mapToHealthEventResponse(CameraHealthEvent event) {
+        return CameraHealthEventResponse.builder()
+                .id(event.getId())
+                .cameraId(event.getCamera().getId())
+                .cameraName(event.getCamera().getName())
+                .status(event.getStatus())
+                .message(event.getMessage())
+                .errorType(event.getErrorType())
+                .processedFrames(event.getProcessedFrames())
+                .droppedFrames(event.getDroppedFrames())
+                .inferenceLatencyMs(event.getInferenceLatencyMs())
+                .recordedAt(event.getRecordedAt())
+                .createdAt(event.getCreatedAt())
+                .build();
     }
 
     public Optional<CameraCalibrationResponse> getCalibration(UUID cameraId) {
@@ -178,8 +200,13 @@ public class CameraService {
         Camera camera = cameraRepository.findById(cameraId)
                 .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", cameraId));
 
-        CameraCalibration calibration = new CameraCalibration();
-        calibration.setCamera(camera);
+        CameraCalibration calibration = cameraCalibrationRepository.findByCameraId(cameraId)
+                .orElseGet(CameraCalibration::new);
+
+        if (calibration.getId() == null) {
+            calibration.setCamera(camera);
+        }
+
         calibration.setCalibrationData(request.getCalibrationData());
         calibration.setReferencePoint1(request.getReferencePoint1());
         calibration.setReferencePoint2(request.getReferencePoint2());

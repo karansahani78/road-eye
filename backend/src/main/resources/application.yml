@@ -2,12 +2,14 @@ server:
   port: 8080
 
 spring:
+  config:
+    import: optional:file:.env[.properties]
   application:
     name: roadeye
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/roadeye}
-    username: ${SPRING_DATASOURCE_USERNAME:roadeye}
-    password: ${SPRING_DATASOURCE_PASSWORD:roadeye_dev}
+    username: ${SPRING_DATASOURCE_USERNAME:postgres}
+    password: ${SPRING_DATASOURCE_PASSWORD:karan143}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 20
@@ -32,7 +34,7 @@ spring:
       group-id: roadeye-group
       auto-offset-reset: earliest
       key-deserializer: org.apache.kafka.common.serialization.StringDeserializer
-      value-deserializer: org.springframework.kafka.support.serializer.JsonDeserializer
+      value-deserializer: org.apache.kafka.common.serialization.StringDeserializer
       properties:
         spring.json.trusted.packages: com.roadeye.*
     producer:
@@ -50,12 +52,12 @@ spring:
 
 minio:
   endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-  access-key: ${MINIO_ACCESS_KEY:roadeye}
-  secret-key: ${MINIO_SECRET_KEY:roadeye_dev}
+  access-key: ${MINIO_ACCESS_KEY:minioadmin}
+  secret-key: ${MINIO_SECRET_KEY:minioadmin123}
   bucket: ${MINIO_BUCKET:roadeye-evidence}
 
 jwt:
-  secret: ${JWT_SECRET:change-this-to-a-secure-random-secret-in-production}
+  secret: ${JWT_SECRET:iofsdafijaifadsifjawpiojrew3w242342oipkofksajdf=}
   expiration: ${JWT_EXPIRATION:86400000}
 
 ai:

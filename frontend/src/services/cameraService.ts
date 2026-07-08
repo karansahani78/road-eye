@@ -1,5 +1,5 @@
 import api from './api';
-import { Camera, CameraCalibration, ApiResponse, PagedResponse } from '../types';
+import { Camera, CameraCalibration, ApiResponse, PagedResponse, CameraHealthEvent, StreamStatus } from '../types';
 
 export const cameraService = {
   getAll: async (params?: any): Promise<PagedResponse<Camera>> => {
@@ -41,8 +41,27 @@ export const cameraService = {
     return response.data.data;
   },
 
-  getHealth: async (id: string): Promise<any> => {
-    const response = await api.get(`/cameras/${id}/health`);
-    return response.data;
+  getHealth: async (id: string): Promise<PagedResponse<CameraHealthEvent>> => {
+    const response = await api.get<ApiResponse<PagedResponse<CameraHealthEvent>>>(`/cameras/${id}/health`);
+    return response.data.data;
+  },
+
+  startStream: async (id: string): Promise<void> => {
+    await api.post(`/cameras/${id}/stream/start`);
+  },
+
+  stopStream: async (id: string): Promise<void> => {
+    await api.post(`/cameras/${id}/stream/stop`);
+  },
+
+  getStreamStatus: async (id: string): Promise<StreamStatus> => {
+    const response = await api.get<ApiResponse<StreamStatus>>(`/cameras/${id}/stream/status`);
+    return response.data.data;
+  },
+
+  getStreamUrl: (id: string, ts?: number): string => {
+    const base = `/api/v1/cameras/${id}/stream/mjpeg`;
+    if (ts) return `${base}?_=${ts}`;
+    return base;
   },
 };

@@ -7,7 +7,7 @@ const UsersPage: React.FC = () => {
   const queryClient = useQueryClient();
   const [page, setPage] = useState(0);
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['users', page],
     queryFn: async () => {
       const response = await api.get<ApiResponse<PagedResponse<User>>>('/users', {
@@ -15,6 +15,7 @@ const UsersPage: React.FC = () => {
       });
       return response.data.data;
     },
+    retry: false,
   });
 
   const toggleStatusMutation = useMutation({
@@ -30,7 +31,9 @@ const UsersPage: React.FC = () => {
         <h2>Users & Access Management</h2>
       </div>
 
-      {isLoading ? (
+      {error ? (
+        <div className="error">You do not have permission to view users.</div>
+      ) : isLoading ? (
         <div className="loading">Loading users...</div>
       ) : (
         <>

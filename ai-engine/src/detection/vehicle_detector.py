@@ -8,14 +8,14 @@ from src.common.models import Detection, VehicleCategory
 logger = logging.getLogger(__name__)
 
 # COCO class to RoadEye category mapping for YOLOv8
+# Only actual traffic vehicle classes are included.
+# All non-traffic COCO classes (person=0, chair=56, etc.) are silently discarded.
 COCO_TO_ROADEYE = {
     1: VehicleCategory.BICYCLE,
     2: VehicleCategory.MOTORCYCLE,
     3: VehicleCategory.CAR,
     4: VehicleCategory.BUS,
     5: VehicleCategory.TRUCK,
-    6: VehicleCategory.TRUCK,  # boat -> other
-    7: VehicleCategory.OTHER,  # train -> other
 }
 
 COCO_CLASS_NAMES = {
@@ -24,9 +24,10 @@ COCO_CLASS_NAMES = {
     3: "car",
     4: "bus",
     5: "truck",
-    6: "boat",
-    7: "train",
 }
+
+# Set of accepted COCO class IDs — fast lookup
+ACCEPTED_COCO_CLASSES = frozenset(COCO_TO_ROADEYE.keys())
 
 
 class VehicleDetector:
@@ -40,14 +41,15 @@ class VehicleDetector:
     def _load_model(self):
         try:
             from ultralytics import YOLO
-            model_path = f"{self.settings.MODEL_PATH}/yolov8n.pt"
+            model_name = self.settings.MODEL_NAME
+            model_path = f"{self.settings.MODEL_PATH}/{model_name}"
             try:
                 self.model = YOLO(model_path)
                 logger.info(f"Loaded YOLOv8 model from {model_path}")
             except Exception:
-                logger.info("Model file not found, downloading YOLOv8n...")
-                self.model = YOLO("yolov8n.pt")
-                logger.info("YOLOv8n model downloaded and loaded")
+                logger.info(f"Model file not found at {model_path}, downloading {model_name}...")
+                self.model = YOLO(model_name)
+                logger.info(f"{model_name} model downloaded and loaded")
         except ImportError:
             logger.warning("ultralytics not installed. Using DNN-based detector.")
             self._load_dnn_model()
@@ -63,28 +65,42 @@ class VehicleDetector:
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
         if self.model is None:
-            return self._fallback_detect(frame)
+            return []
         try:
             return self._yolo_detect(frame)
         except Exception as e:
             logger.error(f"Detection error: {e}")
-            return self._fallback_detect(frame)
+            return []
 
     def _yolo_detect(self, frame: np.ndarray) -> List[Detection]:
-        results = self.model(frame, verbose=False)
+        img_size = self.settings.DETECTION_IMAGE_SIZE
+        device = self.settings.DETECTION_DEVICE or None
+        results = self.model(
+            frame,
+            verbose=False,
+            imgsz=img_size,
+            conf=self.settings.DETECTION_CONFIDENCE_THRESHOLD,
+            iou=self.settings.DETECTION_IOU_THRESHOLD,
+            max_det=self.settings.DETECTION_MAX_DETECTIONS,
+            device=device,
+        )
         detections = []
         for result in results:
             boxes = result.boxes
             if boxes is None:
                 continue
             for i in range(len(boxes)):
-                bbox = boxes.xyxy[i].tolist()
-                confidence = float(boxes.conf[i])
                 class_id = int(boxes.cls[i])
-                class_name = COCO_CLASS_NAMES.get(class_id, f"class_{class_id}")
-                mapped = COCO_TO_ROADEYE.get(class_id, VehicleCategory.OTHER)
-                if confidence < self.settings.VEHICLE_DETECTION_CONFIDENCE:
+
+                # REJECT non-traffic classes immediately
+                if class_id not in ACCEPTED_COCO_CLASSES:
                     continue
+
+                confidence = float(boxes.conf[i])
+                bbox = boxes.xyxy[i].tolist()
+                class_name = COCO_CLASS_NAMES.get(class_id, f"class_{class_id}")
+                mapped = COCO_TO_ROADEYE[class_id]
+
                 detections.append(Detection(
                     bbox=bbox,
                     confidence=confidence,
@@ -93,7 +109,3 @@ class VehicleDetector:
                     mapped_category=mapped,
                 ))
         return detections
-
-    def _fallback_detect(self, frame: np.ndarray) -> List[Detection]:
-        logger.debug("Using fallback detection (development mode)")
-        return []

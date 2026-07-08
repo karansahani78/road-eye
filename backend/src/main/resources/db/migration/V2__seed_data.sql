@@ -1,5 +1,5 @@
 -- Seed default admin user
--- Password hash is for 'password' (default) - regenerate for production
+-- Legacy hash for 'password'; DefaultUserPasswordBootstrap migrates to admin123 on startup
 INSERT INTO users (id, username, email, password, full_name, active, role, created_at, updated_at)
 VALUES (
     gen_random_uuid(),
@@ -14,7 +14,7 @@ VALUES (
 );
 
 -- Seed default system operator
--- Password hash is for 'password' (default) - regenerate for production
+-- Legacy hash for 'password'; DefaultUserPasswordBootstrap migrates to operator123 on startup
 INSERT INTO users (id, username, email, password, full_name, active, role, created_at, updated_at)
 VALUES (
     gen_random_uuid(),

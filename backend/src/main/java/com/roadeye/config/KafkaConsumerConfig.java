@@ -2,6 +2,11 @@ package com.roadeye.config;
 
 import com.roadeye.alert.entity.Alert;
 import com.roadeye.alert.repository.AlertRepository;
+import com.roadeye.camera.entity.Camera;
+import com.roadeye.camera.entity.Camera.HealthStatus;
+import com.roadeye.camera.entity.CameraHealthEvent;
+import com.roadeye.camera.repository.CameraHealthEventRepository;
+import com.roadeye.camera.repository.CameraRepository;
 import com.roadeye.plate.entity.PlateObservation;
 import com.roadeye.plate.repository.PlateObservationRepository;
 import com.roadeye.speed.entity.SpeedMeasurement;
@@ -12,20 +17,19 @@ import com.roadeye.vehicle.repository.VehicleObservationRepository;
 import com.roadeye.vehicle.repository.VehicleTrackRepository;
 import com.roadeye.violation.entity.Violation;
 import com.roadeye.violation.entity.ViolationEvidence;
+import com.roadeye.violation.repository.ViolationEvidenceRepository;
 import com.roadeye.violation.service.ViolationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
-import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.kafka.annotation.KafkaListener;
-import org.springframework.kafka.support.KafkaHeaders;
-import org.springframework.messaging.handler.annotation.Header;
 import org.springframework.messaging.handler.annotation.Payload;
 import org.springframework.messaging.simp.SimpMessagingTemplate;
 
 import java.time.Instant;
 import java.util.Map;
+import java.util.Optional;
 import java.util.UUID;
 
 @Configuration
@@ -41,15 +45,21 @@ public class KafkaConsumerConfig {
     private final AlertRepository alertRepository;
     private final SimpMessagingTemplate messagingTemplate;
     private final ObjectMapper objectMapper;
+    private final CameraRepository cameraRepository;
+    private final CameraHealthEventRepository cameraHealthEventRepository;
+    private final ViolationEvidenceRepository violationEvidenceRepository;
 
     public KafkaConsumerConfig(VehicleObservationRepository vehicleObservationRepository,
-                               VehicleTrackRepository vehicleTrackRepository,
-                               PlateObservationRepository plateObservationRepository,
-                               SpeedMeasurementRepository speedMeasurementRepository,
-                               ViolationService violationService,
-                               AlertRepository alertRepository,
-                               SimpMessagingTemplate messagingTemplate,
-                               ObjectMapper objectMapper) {
+                                VehicleTrackRepository vehicleTrackRepository,
+                                PlateObservationRepository plateObservationRepository,
+                                SpeedMeasurementRepository speedMeasurementRepository,
+                                ViolationService violationService,
+                                AlertRepository alertRepository,
+                                SimpMessagingTemplate messagingTemplate,
+                                ObjectMapper objectMapper,
+                                CameraRepository cameraRepository,
+                                CameraHealthEventRepository cameraHealthEventRepository,
+                                ViolationEvidenceRepository violationEvidenceRepository) {
         this.vehicleObservationRepository = vehicleObservationRepository;
         this.vehicleTrackRepository = vehicleTrackRepository;
         this.plateObservationRepository = plateObservationRepository;
@@ -58,13 +68,42 @@ public class KafkaConsumerConfig {
         this.alertRepository = alertRepository;
         this.messagingTemplate = messagingTemplate;
         this.objectMapper = objectMapper;
+        this.cameraRepository = cameraRepository;
+        this.cameraHealthEventRepository = cameraHealthEventRepository;
+        this.violationEvidenceRepository = violationEvidenceRepository;
     }
 
     @KafkaListener(topics = "${kafka.topics.camera-health:camera-health}", groupId = "${spring.kafka.consumer.group-id}")
-    public void handleCameraHealth(@Payload String message,
-                                   @Header(KafkaHeaders.RECEIVED_TOPIC) String topic) {
+    public void handleCameraHealth(@Payload String message) {
         try {
-            log.debug("Received camera health event: {}", message);
+            Map<String, Object> data = objectMapper.readValue(message, Map.class);
+            String cameraId = getString(data, "camera_id");
+            Map<String, Object> payload = extractPayload(data);
+            Instant eventTimestamp = parseTimestamp(data);
+
+            Optional<Camera> cameraOpt = cameraRepository.findById(UUID.fromString(cameraId));
+            if (cameraOpt.isEmpty()) {
+                log.warn("Camera not found for health event: {}", cameraId);
+                return;
+            }
+
+            Camera camera = cameraOpt.get();
+            String status = getString(payload, "status");
+            camera.setHealthStatus(HealthStatus.valueOf(status));
+            camera.setLastHeartbeat(eventTimestamp);
+            cameraRepository.save(camera);
+
+            CameraHealthEvent healthEvent = new CameraHealthEvent();
+            healthEvent.setCamera(camera);
+            healthEvent.setStatus(status);
+            healthEvent.setMessage(getString(payload, "message"));
+            healthEvent.setProcessedFrames(getLong(payload, "processed_frames"));
+            healthEvent.setDroppedFrames(getLong(payload, "dropped_frames"));
+            healthEvent.setInferenceLatencyMs(getDouble(payload, "inference_latency_ms"));
+            healthEvent.setRecordedAt(eventTimestamp);
+            cameraHealthEventRepository.save(healthEvent);
+
+            log.debug("Processed camera health event: {} status={}", cameraId, status);
         } catch (Exception e) {
             log.error("Error processing camera health event: {}", e.getMessage());
         }
@@ -78,7 +117,7 @@ public class KafkaConsumerConfig {
 
             VehicleObservation obs = new VehicleObservation();
             obs.setCameraId(getString(payload, "camera_id"));
-            obs.setObservedAt(Instant.now());
+            obs.setObservedAt(parseTimestamp(data));
             obs.setTrackId(getInteger(payload, "track_id"));
             obs.setCategory(getString(payload, "category"));
             obs.setOriginalClassName(getString(payload, "original_class_name"));
@@ -104,16 +143,21 @@ public class KafkaConsumerConfig {
 
             PlateObservation plate = new PlateObservation();
             plate.setCameraId(getString(payload, "camera_id"));
-            plate.setObservedAt(Instant.now());
+            plate.setObservedAt(parseTimestamp(data));
             plate.setPlateText(getString(payload, "plate_text"));
             plate.setNormalizedPlate(getString(payload, "normalized_plate"));
             plate.setCountry(getString(payload, "country"));
             plate.setCountryConfidence(getDouble(payload, "country_confidence"));
             plate.setOcrConfidence(getDouble(payload, "ocr_confidence"));
             plate.setQualityScore(getDouble(payload, "quality_score"));
+            plate.setTrackId(getInteger(payload, "track_id"));
+            plate.setBbox(toJson(payload.get("bbox")));
+            plate.setAlternatives(toJson(payload.get("alternatives")));
+            plate.setDetectorVersion(getString(payload, "detector_version"));
+            plate.setOcrModelVersion(getString(payload, "ocr_model_version"));
 
             plateObservationRepository.save(plate);
-            log.debug("Saved plate observation: {}", plate.getNormalizedPlate());
+            log.debug("Saved plate observation: {} track={}", plate.getNormalizedPlate(), plate.getTrackId());
         } catch (Exception e) {
             log.error("Error processing plate recognition: {}", e.getMessage());
         }
@@ -127,13 +171,14 @@ public class KafkaConsumerConfig {
 
             SpeedMeasurement speed = new SpeedMeasurement();
             speed.setCameraId(getString(payload, "camera_id"));
-            speed.setMeasuredAt(Instant.now());
+            speed.setMeasuredAt(parseTimestamp(data));
             speed.setTrackId(getInteger(payload, "track_id"));
             speed.setSpeedKmh(getDouble(payload, "speed_kmh"));
             speed.setSmoothedSpeedKmh(getDouble(payload, "smoothed_speed_kmh"));
             speed.setConfidence(getDouble(payload, "confidence"));
             speed.setDistanceM(getDouble(payload, "distance_m"));
             speed.setDurationMs(getDouble(payload, "duration_ms"));
+            speed.setCalibrationVersion(getString(payload, "calibration_version"));
             speed.setAlgorithmVersion(getString(payload, "algorithm_version"));
 
             speedMeasurementRepository.save(speed);
@@ -151,7 +196,7 @@ public class KafkaConsumerConfig {
 
             Violation violation = new Violation();
             violation.setCameraId(getString(payload, "camera_id"));
-            violation.setViolatedAt(Instant.now());
+            violation.setViolatedAt(parseTimestamp(data));
             violation.setViolationType(getString(payload, "violation_type"));
             violation.setConfidence(getDouble(payload, "confidence"));
             violation.setStatus("DETECTED");
@@ -175,7 +220,22 @@ public class KafkaConsumerConfig {
     @KafkaListener(topics = "${kafka.topics.evidence-created:evidence-created}", groupId = "${spring.kafka.consumer.group-id}")
     public void handleEvidenceCreated(@Payload String message) {
         try {
-            log.debug("Evidence created event received: {}", message);
+            Map<String, Object> data = objectMapper.readValue(message, Map.class);
+            Map<String, Object> payload = extractPayload(data);
+
+            ViolationEvidence evidence = new ViolationEvidence();
+            evidence.setViolationId(getString(payload, "violation_id"));
+            evidence.setEvidenceType(getString(payload, "evidence_type"));
+            evidence.setFilePath(getString(payload, "file_path"));
+            evidence.setBucketName(getString(payload, "bucket_name"));
+            evidence.setObjectKey(getString(payload, "object_key"));
+            evidence.setFileSize(getLong(payload, "file_size"));
+            evidence.setContentType(getString(payload, "content_type"));
+            evidence.setChecksum(getString(payload, "checksum"));
+            evidence.setMetadata(toJson(payload.get("metadata")));
+
+            violationEvidenceRepository.save(evidence);
+            log.info("Saved evidence for violation: {}", evidence.getViolationId());
         } catch (Exception e) {
             log.error("Error processing evidence event: {}", e.getMessage());
         }
@@ -212,6 +272,18 @@ public class KafkaConsumerConfig {
         return event;
     }
 
+    private Instant parseTimestamp(Map<String, Object> event) {
+        Object ts = event.get("timestamp");
+        if (ts instanceof String s) {
+            try {
+                return Instant.parse(s);
+            } catch (Exception e) {
+                return Instant.now();
+            }
+        }
+        return Instant.now();
+    }
+
     private String getString(Map<String, Object> map, String key) {
         Object val = map.get(key);
         return val != null ? val.toString() : null;
@@ -220,6 +292,12 @@ public class KafkaConsumerConfig {
     private Integer getInteger(Map<String, Object> map, String key) {
         Object val = map.get(key);
         if (val instanceof Number) return ((Number) val).intValue();
+        return null;
+    }
+
+    private Long getLong(Map<String, Object> map, String key) {
+        Object val = map.get(key);
+        if (val instanceof Number) return ((Number) val).longValue();
         return null;
     }
 

@@ -1,17 +1,19 @@
 import logging
 import re
 from typing import List, Optional, Tuple
+
 import cv2
 import numpy as np
 
-from src.common.models import PlateResult, Track, Detection
+from src.common.models import PlateResult, Track
 
 logger = logging.getLogger(__name__)
 
 
 class PlateRecognizer:
-    def __init__(self):
+    def __init__(self, ocr_confidence_threshold: float = 0.3):
         self.reader = None
+        self.ocr_confidence_threshold = ocr_confidence_threshold
         self._load_reader()
 
     def _load_reader(self):
@@ -20,82 +22,110 @@ class PlateRecognizer:
             self.reader = easyocr.Reader(['en'], gpu=False)
             logger.info("EasyOCR reader initialized")
         except Exception as e:
-            logger.warning(f"EasyOCR not available: {e}")
+            logger.error(f"Failed to initialize EasyOCR: {e}")
             self.reader = None
 
-    def recognize(self, frame: np.ndarray,
-                  tracks: List[Track]) -> List[PlateResult]:
-        if self.reader is None:
+    def recognize(self, frame: np.ndarray, tracks: List[Track]) -> List[PlateResult]:
+        if self.reader is None or not tracks:
             return []
 
-        results = []
+        results: List[PlateResult] = []
         for track in tracks:
-            if not track.detections:
+            if track.lost or track.completed or not track.detections:
                 continue
+
             det = track.detections[-1]
-            plate = self._detect_plate_in_roi(frame, det.bbox)
-            if plate:
+            plate = self._detect_plate_in_roi(frame, det.bbox, track.track_id)
+            if plate is not None:
                 results.append(plate)
 
         return results
 
-    def _detect_plate_in_roi(self, frame: np.ndarray,
-                              bbox: List[float]) -> Optional[PlateResult]:
-        try:
-            x1, y1, x2, y2 = [int(v) for v in bbox]
-            x1, y1 = max(0, x1), max(0, y1)
-            x2 = min(frame.shape[1], x2)
-            y2 = min(frame.shape[0], y2)
+    def _detect_plate_in_roi(self, frame: np.ndarray, bbox: List[float],
+                             track_id: int) -> Optional[PlateResult]:
+        h, w = frame.shape[:2]
+        x1 = max(0, int(bbox[0]))
+        y1 = max(0, int(bbox[1]))
+        x2 = min(w, int(bbox[2]))
+        y2 = min(h, int(bbox[3]))
 
-            roi = frame[y1:y2, x1:x2]
-            if roi.size == 0:
-                return None
-
-            h, w = roi.shape[:2]
-            bottom_roi = roi[int(h*0.6):h, :]
-
-            if bottom_roi.size == 0:
-                return None
-
-            results = self.reader.readtext(bottom_roi)
-
-            if not results:
-                return None
-
-            best = max(results, key=lambda r: r[2])
-            bbox_coords, text, confidence = best
-
-            if confidence < 0.3:
-                return None
-
-            normalized, country, country_conf = self._normalize_plate(text)
-
-            return PlateResult(
-                plate_text=text,
-                normalized_plate=normalized,
-                country=country,
-                country_confidence=country_conf,
-                ocr_confidence=confidence,
-                bbox=bbox_coords,
-                quality_score=confidence,
-            )
-        except Exception as e:
-            logger.error(f"Plate recognition error: {e}")
+        if x2 <= x1 or y2 <= y1:
             return None
 
+        # Focus on the bottom portion of the bounding box (where plates typically are)
+        plate_roi_y1 = y1 + int((y2 - y1) * 0.55)
+        plate_roi = frame[plate_roi_y1:y2, x1:x2]
+
+        if plate_roi.size == 0:
+            return None
+
+        # Preprocess: resize if too small, convert to grayscale, enhance contrast
+        if plate_roi.shape[0] < 20 or plate_roi.shape[1] < 40:
+            scale = max(2.0, 40.0 / plate_roi.shape[1])
+            plate_roi = cv2.resize(plate_roi, None, fx=scale, fy=scale)
+
+        gray = cv2.cvtColor(plate_roi, cv2.COLOR_RGB2GRAY)
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        enhanced = clahe.apply(gray)
+
+        try:
+            ocr_results = self.reader.readtext(enhanced, paragraph=False)
+        except Exception as e:
+            logger.warning(f"OCR error for track {track_id}: {e}")
+            return None
+
+        best_text = None
+        best_confidence = 0.0
+        best_bbox = None
+
+        for (corners, text, conf) in ocr_results:
+            if conf < self.ocr_confidence_threshold:
+                continue
+            cleaned = re.sub(r'[^A-Za-z0-9]', '', text).upper()
+            if not cleaned or len(cleaned) < 3 or len(cleaned) > 15:
+                continue
+            if conf > best_confidence:
+                best_text = cleaned
+                best_confidence = conf
+                if corners:
+                    best_bbox = [float(corners[0][0]) + x1,
+                                 float(corners[0][1]) + plate_roi_y1,
+                                 float(corners[2][0]) + x1,
+                                 float(corners[2][1]) + plate_roi_y1]
+
+        if best_text is None:
+            return None
+
+        normalized, country, country_conf = self._normalize_plate(best_text)
+        return PlateResult(
+            plate_text=best_text,
+            normalized_plate=normalized,
+            country=country,
+            country_confidence=country_conf,
+            ocr_confidence=round(best_confidence, 4),
+            quality_score=round(best_confidence, 4),
+            track_id=track_id,
+            bbox=best_bbox or [x1, plate_roi_y1, x2, y2],
+        )
+
     def _normalize_plate(self, text: str) -> Tuple[str, str, float]:
-        cleaned = re.sub(r'[^A-Za-z0-9]', '', text).upper()
+        # Nepal format: XX XX XXXX (e.g., "BA 1 2345" or "BA 12 3456")
+        nepal_patterns = [
+            r'^[A-Z]{2}\d{1,2}\d{4}$',    # BA12345 -> BA 1 2345
+            r'^[A-Z]{2}\d{2}\d{4}$',      # BA1212345 -> BA 12 12345
+        ]
+        for pattern in nepal_patterns:
+            if re.match(pattern, text):
+                return text, "NEPAL", 0.9
 
-        # Nepal plate format: XX X XXXX (e.g., BA 1 2345)
-        nepal_pattern = r'^[A-Z]{2}\d{1,2}\d{4}$'
-        # India plate format: XX-XX-XXXX (e.g., UP 14 AB 1234)
+        # India format: XX XX XXXX (e.g., "DL 01 AB 1234")
         india_pattern = r'^[A-Z]{2}\d{2}[A-Z]{2}\d{4}$'
+        if re.match(india_pattern, text):
+            return text, "INDIA", 0.85
 
-        if re.match(nepal_pattern, cleaned):
-            return cleaned, "NEPAL", 0.9
-        elif re.match(india_pattern, cleaned):
-            return cleaned, "INDIA", 0.85
-        elif len(cleaned) >= 5 and any(c.isdigit() for c in cleaned):
-            return cleaned, "UNKNOWN", 0.5
-        else:
-            return cleaned, "UNKNOWN", 0.3
+        # Broader India format with single letter state code
+        broad_india = r'^[A-Z]{1,2}\d{1,2}[A-Z]{1,2}\d{1,4}$'
+        if re.match(broad_india, text):
+            return text, "INDIA", 0.7
+
+        return text, "UNKNOWN", 0.5

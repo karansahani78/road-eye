@@ -2,8 +2,6 @@ import React, { useEffect, useState } from 'react';
 import { MapContainer, TileLayer, Marker, Popup } from 'react-leaflet';
 import { useQuery } from '@tanstack/react-query';
 import { cameraService } from '../services/cameraService';
-import L from 'leaflet';
-
 const MapPage: React.FC = () => {
   const [center] = useState<[number, number]>([27.7172, 85.3240]); // Kathmandu
   const { data: camerasData } = useQuery({
@@ -12,15 +10,6 @@ const MapPage: React.FC = () => {
   });
 
   const cameras = camerasData?.content?.filter(c => c.latitude && c.longitude) || [];
-
-  const getMarkerColor = (status: string) => {
-    switch (status) {
-      case 'ONLINE': return '#22c55e';
-      case 'OFFLINE': return '#ef4444';
-      case 'DEGRADED': return '#f97316';
-      default: return '#6b7280';
-    }
-  };
 
   return (
     <div className="map-page">

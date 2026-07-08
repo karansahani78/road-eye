@@ -51,17 +51,24 @@ export interface Camera {
   lastHeartbeat: string;
   lastSuccessfulFrame: string;
   createdAt: string;
+  updatedAt?: string;
 }
 
 export interface CameraCalibration {
   id: string;
   cameraId: string;
   calibrationVersion: string;
+  calibrationData?: string;
+  referencePoint1?: string;
+  referencePoint2?: string;
   knownDistance: number;
+  perspectiveTransform?: string;
   algorithmVersion: string;
   calibratedBy: string;
   calibratedAt: string;
   active: boolean;
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 export interface Violation {
@@ -183,4 +190,32 @@ export interface Road {
   district: string;
   length: number;
   speedLimit: number;
+}
+
+export interface CameraHealthEvent {
+  id: string;
+  cameraId: string;
+  cameraName: string;
+  status: string;
+  message?: string;
+  errorType?: string;
+  processedFrames?: number;
+  droppedFrames?: number;
+  inferenceLatencyMs?: number;
+  recordedAt: string;
+  createdAt: string;
+}
+
+export interface StreamStatus {
+  camera_id: string;
+  stream: {
+    status: 'RUNNING' | 'STOPPED' | 'ERROR';
+    fps: number;
+    vehicles_detected: number;
+    frame_count: number;
+    dropped_frames: number;
+    frame_ready: boolean;
+    started_at: string;
+    error_message?: string;
+  };
 }

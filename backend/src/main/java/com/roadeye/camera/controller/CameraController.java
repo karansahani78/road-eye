@@ -2,18 +2,25 @@ package com.roadeye.camera.controller;
 
 import com.roadeye.camera.dto.CameraCalibrationRequest;
 import com.roadeye.camera.dto.CameraCalibrationResponse;
+import com.roadeye.camera.dto.CameraHealthEventResponse;
 import com.roadeye.camera.dto.CameraRequest;
 import com.roadeye.camera.dto.CameraResponse;
-import com.roadeye.camera.entity.CameraHealthEvent;
+import com.roadeye.camera.service.CameraEventService;
 import com.roadeye.camera.service.CameraService;
 import com.roadeye.shared.ApiResponse;
 import com.roadeye.shared.PagedResponse;
 import jakarta.validation.Valid;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.web.servlet.mvc.method.annotation.StreamingResponseBody;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.DeleteMapping;
@@ -25,19 +32,32 @@ import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.client.RestTemplate;
 
+import java.net.URI;
+import java.util.HashMap;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/v1/cameras")
 public class CameraController {
 
-    private final CameraService cameraService;
+    private static final Logger log = LoggerFactory.getLogger(CameraController.class);
 
-    public CameraController(CameraService cameraService) {
+    private final CameraService cameraService;
+    private final CameraEventService cameraEventService;
+    private final RestTemplate restTemplate;
+
+    @Value("${ai.service.url:http://localhost:8000}")
+    private String aiServiceUrl;
+
+    public CameraController(CameraService cameraService,
+                            CameraEventService cameraEventService,
+                            RestTemplate restTemplate) {
         this.cameraService = cameraService;
+        this.cameraEventService = cameraEventService;
+        this.restTemplate = restTemplate;
     }
 
     @PostMapping
@@ -95,15 +115,15 @@ public class CameraController {
     }
 
     @GetMapping("/{id}/health")
-    public ResponseEntity<ApiResponse<PagedResponse<CameraHealthEvent>>> getCameraHealth(
+    public ResponseEntity<ApiResponse<PagedResponse<CameraHealthEventResponse>>> getCameraHealth(
             @PathVariable UUID id,
             @RequestParam(defaultValue = "0") int page,
             @RequestParam(defaultValue = "20") int size) {
 
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "recordedAt"));
-        Page<CameraHealthEvent> healthPage = cameraService.getCameraHealth(id, pageable);
+        Page<CameraHealthEventResponse> healthPage = cameraService.getCameraHealth(id, pageable);
 
-        PagedResponse<CameraHealthEvent> pagedResponse = PagedResponse.<CameraHealthEvent>builder()
+        PagedResponse<CameraHealthEventResponse> pagedResponse = PagedResponse.<CameraHealthEventResponse>builder()
                 .content(healthPage.getContent())
                 .page(healthPage.getNumber())
                 .size(healthPage.getSize())
@@ -128,6 +148,108 @@ public class CameraController {
             @Valid @RequestBody CameraCalibrationRequest request,
             Authentication authentication) {
         CameraCalibrationResponse response = cameraService.createCalibration(id, request, authentication.getName());
-        return ResponseEntity.status(HttpStatus.CREATED).body(ApiResponse.success(response));
+
+        // Push calibration to AI Engine if stream is running (best-effort)
+        try {
+            String calibrateUrl = aiServiceUrl + "/api/v1/streams/" + id + "/calibrate";
+            Map<String, Object> calBody = new HashMap<>();
+            calBody.put("known_distance_m", request.getKnownDistance());
+            calBody.put("calibration_data", request.getCalibrationData());
+            calBody.put("reference_point1", request.getReferencePoint1());
+            calBody.put("reference_point2", request.getReferencePoint2());
+            HttpEntity<Map<String, Object>> calRequest = new HttpEntity<>(calBody);
+            restTemplate.postForEntity(calibrateUrl, calRequest, String.class);
+        } catch (Exception e) {
+            // Calibration saved to DB; AI Engine push is best-effort
+            log.warn("Failed to push calibration to AI Engine for camera {}: {}", id, e.getMessage());
+        }
+
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
+    @PostMapping("/{id}/stream/start")
+    public ResponseEntity<ApiResponse<String>> startStream(@PathVariable UUID id) {
+        var camera = cameraService.getCameraEntity(id);
+        try {
+            cameraEventService.startCameraStream(camera);
+            return ResponseEntity.ok(ApiResponse.success("Stream started"));
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (msg.contains("502") || msg.contains("Unable to connect")) {
+                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                        .body(ApiResponse.error("Unable to connect to camera stream"));
+            }
+            if (msg.contains("409") || msg.contains("already running")) {
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(ApiResponse.error("Stream already running for this camera"));
+            }
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(ApiResponse.error("Failed to start camera stream"));
+        }
+    }
+
+    @PostMapping("/{id}/stream/stop")
+    public ResponseEntity<ApiResponse<String>> stopStream(@PathVariable UUID id) {
+        var camera = cameraService.getCameraEntity(id);
+        try {
+            cameraEventService.stopCameraStream(camera);
+            return ResponseEntity.ok(ApiResponse.success("Stream stopped"));
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                    .body(ApiResponse.error("Failed to stop camera stream"));
+        }
+    }
+
+    @GetMapping("/{id}/stream/status")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> getStreamStatus(@PathVariable UUID id) {
+        try {
+            String url = aiServiceUrl + "/api/v1/streams/" + id + "/status";
+            ResponseEntity<Map> response = restTemplate.getForEntity(url, Map.class);
+            @SuppressWarnings("unchecked")
+            Map<String, Object> body = response.getBody();
+            return ResponseEntity.ok(ApiResponse.success(body));
+        } catch (Exception e) {
+            // 404 from AI Engine means no stream — return STOPPED, not UNKNOWN
+            return ResponseEntity.ok(ApiResponse.success(Map.of(
+                    "camera_id", id.toString(),
+                    "stream", Map.of(
+                            "status", "STOPPED",
+                            "fps", 0,
+                            "vehicles_detected", 0,
+                            "frame_count", 0,
+                            "dropped_frames", 0
+                    )
+            )));
+        }
+    }
+
+    @GetMapping(value = "/{id}/stream/mjpeg", produces = MediaType.APPLICATION_OCTET_STREAM_VALUE)
+    public ResponseEntity<StreamingResponseBody> proxyMjpeg(@PathVariable UUID id) {
+        String url = aiServiceUrl + "/api/v1/streams/" + id + "/mjpeg";
+        StreamingResponseBody body = outputStream -> {
+            try (var in = URI.create(url).toURL().openStream()) {
+                in.transferTo(outputStream);
+                outputStream.flush();
+            }
+        };
+        return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType("multipart/x-mixed-replace; boundary=frame"))
+                .body(body);
+    }
+
+    @GetMapping("/{id}/stream/frame")
+    public ResponseEntity<byte[]> proxyFrame(@PathVariable UUID id) {
+        try {
+            String url = aiServiceUrl + "/api/v1/streams/" + id + "/frame";
+            byte[] frameBytes = restTemplate.getForObject(url, byte[].class);
+            if (frameBytes == null) {
+                return ResponseEntity.status(HttpStatus.NOT_FOUND).build();
+            }
+            return ResponseEntity.ok()
+                    .contentType(MediaType.IMAGE_JPEG)
+                    .body(frameBytes);
+        } catch (Exception e) {
+            return ResponseEntity.status(HttpStatus.BAD_GATEWAY).build();
+        }
     }
 }

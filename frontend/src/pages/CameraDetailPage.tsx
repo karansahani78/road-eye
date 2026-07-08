@@ -38,6 +38,12 @@ const CameraDetailPage: React.FC = () => {
     enabled: !!id,
   });
 
+  const { data: healthData } = useQuery({
+    queryKey: ['camera-health', id],
+    queryFn: () => cameraService.getHealth(id!),
+    enabled: !!id,
+  });
+
   const calibrateMutation = useMutation({
     mutationFn: (data: any) => cameraService.saveCalibration(id!, data),
     onSuccess: () => {
@@ -190,6 +196,28 @@ const CameraDetailPage: React.FC = () => {
               {calibrateMutation.isPending ? 'Saving...' : 'Save Calibration'}
             </button>
           </form>
+        </div>
+
+        <div className="detail-card">
+          <h3>Health Events</h3>
+          {healthData?.content?.length ? (
+            <table className="data-table">
+              <thead>
+                <tr><th>Status</th><th>Recorded At</th><th>Details</th></tr>
+              </thead>
+              <tbody>
+                {healthData.content.slice(0, 5).map((event) => (
+                  <tr key={event.id}>
+                    <td>{event.status || '-'}</td>
+                    <td>{event.recordedAt ? new Date(event.recordedAt).toLocaleString() : '-'}</td>
+                    <td>{event.message || '-'}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          ) : (
+            <p className="text-muted">No health events recorded</p>
+          )}
         </div>
 
         <div className="detail-card">

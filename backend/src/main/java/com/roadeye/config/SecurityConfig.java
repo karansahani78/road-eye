@@ -42,6 +42,12 @@ public class SecurityConfig {
                         .requestMatchers("/api/v1/auth/refresh").permitAll()
                         .requestMatchers("/actuator/health").permitAll()
                         .requestMatchers("/actuator/info").permitAll()
+                        // MJPEG stream and individual frame endpoints are read-only streams of
+                        // annotated camera frames. They do not expose RTSP URLs or credentials.
+                        // A stream must be started via authenticated POST before these endpoints
+                        // become active.
+                        .requestMatchers("/api/v1/cameras/*/stream/mjpeg").permitAll()
+                        .requestMatchers("/api/v1/cameras/*/stream/frame").permitAll()
                         .requestMatchers("/api/v1/**").authenticated()
                         .anyRequest().permitAll()
                 )

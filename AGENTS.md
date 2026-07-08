@@ -1,5 +1,35 @@
 # RoadEye — Agent Development Guide
 
+## Current Work State (Last Updated: 2026-07-08)
+
+### VERIFIED WORKING
+- AI Engine: YOLOv8 model loads from `models/yolov8n.pt` via ultralytics
+- AI Engine: EasyOCR initializes successfully (CPU mode)
+- AI Engine: Python 3.11 venv at `ai-engine/.venv` with all deps
+- Backend: Compiles all 96 Java source files with JDK 21 (Temurin)
+- Frontend: Builds successfully with Vite (938KB bundle)
+- Docker: PostgreSQL, Kafka, ZooKeeper, MinIO all healthy and running
+
+### FIXED IN CURRENT SESSION
+- **torchvision reinstall**: Fixed `No module named 'torchvision.models.detection.faster_rcnn'` — reinstalled torch 2.5.1 + torchvision 0.20.1
+- **Speed estimator**: Returns empty results when uncalibrated (no more DEFAULT_PIXELS_PER_METER = 0.05). Requires `calibrate()` to be called with real reference values.
+- **Violation detector**: Wrong-way detection disabled by default (requires `allowed_direction` to be explicitly configured). Overspeeding disabled by default. Both default to `False` now.
+- **Event publishing throttled**: Vehicle observations published once per track (first detection) + heartbeat every ~0.5s. Speed measurements throttled similarly. No more frame-rate Kafka flooding.
+- **ByteBuddy serialization**: Created `CameraHealthEventResponse` DTO. `GET /{id}/health` now returns DTOs, not JPA entities with lazy `@ManyToOne` proxies.
+- **CameraController**: Added stream management endpoints (start/stop/status/mjpeg proxy). CameraEventService uses query params for AI Engine API.
+- **KafkaConsumerConfig**: All 6 handlers fixed with proper entity creation, timestamps from event envelopes, track_id/bbox in plate observations, real evidence creation.
+- **Frontend Live Monitoring**: Created `LiveMonitoringPage.tsx` with camera selector, start/stop monitoring, MJPEG live feed display, stream stats panel. Route added at `/live`. Navigation item "Live Monitor" added.
+- **Event publisher shutdown**: Already guards with `_started` flag in `publish()`.
+
+### STILL TO VERIFY
+- End-to-end runtime test with real RTSP camera
+- Database flooding verification (measure row counts over 60s)
+- PostgreSQL-backed camera registration flow
+- WebSocket real-time alerts from frontend subscriber
+- Evidence capture and storage
+- Camera health event resolution (backend found for health event)
+- Clean shutdown (no ProducerClosed errors)
+
 ## Project Overview
 
 RoadEye is an AI-powered intelligent traffic surveillance, vehicle monitoring, and traffic violation detection platform. It is designed primarily for deployment in Nepal while supporting vehicles and number plates from multiple countries.

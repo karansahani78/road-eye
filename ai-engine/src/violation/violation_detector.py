@@ -1,120 +1,135 @@
 import logging
-from typing import List, Optional
-from datetime import datetime
+import time
+from datetime import datetime, timezone
+from typing import Dict, List, Optional, Tuple
 
 from src.common.models import (
-    ViolationCandidate, ViolationType, Track,
-    SpeedMeasurement, PlateResult, VehicleCategory,
+    Track, SpeedMeasurement, PlateResult, ViolationCandidate, ViolationType,
 )
 
 logger = logging.getLogger(__name__)
 
+MIN_TRACK_HISTORY_POINTS = 10
+MIN_TRACK_DISPLACEMENT_PX = 30
+
+
+class CameraViolationConfig:
+    def __init__(self, speed_limit_kmh: float = 60.0,
+                 allowed_direction: Optional[str] = None,
+                 overspeeding_enabled: bool = False,
+                 wrong_way_enabled: bool = False):
+        self.speed_limit_kmh = speed_limit_kmh
+        self.allowed_direction = allowed_direction
+        self.overspeeding_enabled = overspeeding_enabled
+        self.wrong_way_enabled = wrong_way_enabled
+
 
 class ViolationDetector:
     def __init__(self):
-        self.speed_limits: dict = {}
+        self.camera_configs: Dict[str, CameraViolationConfig] = {}
+        self._reported_violations: Dict[str, float] = {}
+        self._dedup_ttl = 60.0
 
-    def set_speed_limit(self, camera_id: str, limit_kmh: float):
-        self.speed_limits[camera_id] = limit_kmh
+    def configure_camera(self, camera_id: str, config: CameraViolationConfig):
+        self.camera_configs[camera_id] = config
+        logger.info(f"Configured camera {camera_id}: speed_limit={config.speed_limit_kmh}, "
+                     f"direction={config.allowed_direction}")
+
+    def get_config(self, camera_id: str) -> CameraViolationConfig:
+        return self.camera_configs.get(camera_id, CameraViolationConfig())
 
     def detect(self, tracks: List[Track],
                speed_measurements: List[SpeedMeasurement],
                plate_results: List[PlateResult],
-               camera_id: Optional[str] = None) -> List[ViolationCandidate]:
-        violations = []
+               camera_id: str = "unknown") -> List[ViolationCandidate]:
+        config = self.get_config(camera_id)
+        violations: List[ViolationCandidate] = []
 
-        violations.extend(self._detect_overspeeding(
-            speed_measurements, camera_id))
-        violations.extend(self._detect_wrong_way(tracks))
-        violations.extend(self._detect_no_helmet(tracks, plate_results))
+        if config.overspeeding_enabled:
+            violations.extend(self._detect_overspeeding(speed_measurements, camera_id, config))
+
+        if config.wrong_way_enabled and config.allowed_direction:
+            violations.extend(self._detect_wrong_way(tracks, camera_id, config))
 
         return violations
 
-    def _detect_overspeeding(
-            self, speed_measurements: List[SpeedMeasurement],
-            camera_id: Optional[str] = None) -> List[ViolationCandidate]:
-        violations = []
-        speed_limit = self.speed_limits.get(camera_id, 60) if camera_id else 60
+    def _is_duplicate(self, dedup_key: str) -> bool:
+        now = time.time()
+        if dedup_key in self._reported_violations:
+            age = now - self._reported_violations[dedup_key]
+            if age < self._dedup_ttl:
+                return True
+        self._reported_violations[dedup_key] = now
+        if len(self._reported_violations) > 1000:
+            self._reported_violations = {
+                k: v for k, v in self._reported_violations.items()
+                if now - v < self._dedup_ttl
+            }
+        return False
 
-        for speed in speed_measurements:
-            if speed.speed_kmh > speed_limit * 1.1:
+    def _detect_overspeeding(self, speed_measurements: List[SpeedMeasurement],
+                             camera_id: str, config: CameraViolationConfig) -> List[ViolationCandidate]:
+        violations = []
+        for sm in speed_measurements:
+            if sm.speed_kmh > config.speed_limit_kmh * 1.1:
+                dedup_key = f"{camera_id}:{sm.track_id}:OVERSPEEDING"
+                if self._is_duplicate(dedup_key):
+                    continue
                 violations.append(ViolationCandidate(
-                    camera_id=camera_id or "unknown",
-                    timestamp=datetime.utcnow(),
+                    camera_id=camera_id,
+                    timestamp=datetime.now(timezone.utc),
                     violation_type=ViolationType.OVERSPEEDING,
-                    confidence=speed.confidence,
-                    track_id=speed.track_id,
-                    speed_kmh=speed.speed_kmh,
-                    speed_limit=speed_limit,
-                    metadata={
-                        "smoothed_speed": speed.smoothed_speed_kmh,
-                        "algorithm_version": speed.algorithm_version,
-                    },
+                    confidence=min(1.0, sm.confidence),
+                    track_id=sm.track_id,
+                    speed_kmh=sm.speed_kmh,
+                    speed_limit=config.speed_limit_kmh,
                 ))
-
         return violations
 
-    def _detect_wrong_way(self, tracks: List[Track]) -> List[ViolationCandidate]:
+    def _detect_wrong_way(self, tracks: List[Track],
+                          camera_id: str, config: CameraViolationConfig) -> List[ViolationCandidate]:
         violations = []
-        expected_direction = "left-to-right"
 
         for track in tracks:
-            if track.direction and track.direction not in (
-                    "unknown", expected_direction):
-                if track.confidence > 0.5:
-                    violations.append(ViolationCandidate(
-                        camera_id="unknown",
-                        timestamp=datetime.utcnow(),
-                        violation_type=ViolationType.WRONG_WAY_DRIVING,
-                        confidence=track.confidence * 0.7,
-                        track_id=track.track_id,
-                        vehicle_category=track.category,
-                        metadata={"direction": track.direction},
-                    ))
+            if track.lost or track.completed:
+                continue
+            if not track.trajectory or len(track.trajectory) < MIN_TRACK_HISTORY_POINTS:
+                continue
 
-        return violations
+            traj = track.trajectory
+            dx = traj[-1][0] - traj[0][0]
+            dy = traj[-1][1] - traj[0][1]
+            displacement = (dx ** 2 + dy ** 2) ** 0.5
 
-    def _detect_no_helmet(
-            self, tracks: List[Track],
-            plate_results: List[PlateResult]) -> List[ViolationCandidate]:
-        """
-        No-helmet detection stub.
+            if displacement < MIN_TRACK_DISPLACEMENT_PX:
+                continue
 
-        Currently flags all two-wheelers with low confidence because no dedicated
-        helmet detection model (e.g. YOLOv8 fine-tuned on helmet/no-helmet) is
-        deployed. This produces false positives for every motorcycle/scooter/moped.
+            recent = traj[-5:]
+            recent_dx = recent[-1][0] - recent[0][0]
+            recent_dy = recent[-1][1] - recent[0][1]
 
-        To make this production-ready:
-        1. Train/fine-tune a model on helmet vs. no-helmet images
-        2. Replace this stub with actual inference
-        3. Use the helmet model's confidence score instead of the hardcoded value
+            if abs(recent_dx) > abs(recent_dy):
+                actual_direction = "right-to-left" if recent_dx < 0 else "left-to-right"
+            else:
+                actual_direction = "bottom-to-top" if recent_dy < 0 else "top-to-bottom"
 
-        The low confidence (0.15) ensures these candidates are deprioritised in
-        the review queue until a proper model is integrated.
-        """
-        violations = []
-        for track in tracks:
-            if track.category in (
-                    VehicleCategory.MOTORCYCLE,
-                    VehicleCategory.SCOOTER,
-                    VehicleCategory.MOPED,
-            ):
-                logger.warning(
-                    "No-helmet check triggered for track %s (%s) — "
-                    "no dedicated helmet model; confidence set to 0.15",
-                    track.track_id, track.category.value,
-                )
-                violations.append(ViolationCandidate(
-                    camera_id="unknown",
-                    timestamp=datetime.utcnow(),
-                    violation_type=ViolationType.NO_HELMET,
-                    confidence=0.15,
-                    track_id=track.track_id,
-                    vehicle_category=track.category,
-                    metadata={
-                        "detection_method": "category-based-heuristic",
-                        "note": "stub — requires dedicated helmet model",
-                        "requires_human_review": True,
-                    },
-                ))
+            if actual_direction == config.allowed_direction:
+                continue
+
+            dedup_key = f"{camera_id}:{track.track_id}:WRONG_WAY"
+            if self._is_duplicate(dedup_key):
+                continue
+
+            logger.info(f"Wrong-way detection: track={track.track_id} "
+                        f"actual={actual_direction} expected={config.allowed_direction} "
+                        f"displacement={displacement:.1f}px camera={camera_id}")
+
+            violations.append(ViolationCandidate(
+                camera_id=camera_id,
+                timestamp=datetime.now(timezone.utc),
+                violation_type=ViolationType.WRONG_WAY_DRIVING,
+                confidence=min(1.0, displacement / 200.0),
+                track_id=track.track_id,
+            ))
+
         return violations

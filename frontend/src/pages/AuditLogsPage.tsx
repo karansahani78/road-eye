@@ -7,7 +7,7 @@ const AuditLogsPage: React.FC = () => {
   const [page, setPage] = useState(0);
   const [actionFilter, setActionFilter] = useState('');
 
-  const { data, isLoading } = useQuery({
+  const { data, isLoading, error } = useQuery({
     queryKey: ['audit-logs', page, actionFilter],
     queryFn: async () => {
       const response = await api.get<ApiResponse<PagedResponse<AuditLog>>>('/audit-logs', {
@@ -15,6 +15,7 @@ const AuditLogsPage: React.FC = () => {
       });
       return response.data.data;
     },
+    retry: false,
   });
 
   return (
@@ -27,7 +28,9 @@ const AuditLogsPage: React.FC = () => {
         </div>
       </div>
 
-      {isLoading ? (
+      {error ? (
+        <div className="error">You do not have permission to view audit logs.</div>
+      ) : isLoading ? (
         <div className="loading">Loading audit logs...</div>
       ) : (
         <>
