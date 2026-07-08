@@ -25,6 +25,16 @@ public class Camera extends BaseEntity {
         ONLINE, OFFLINE, DEGRADED, UNKNOWN
     }
 
+    public enum LocationSource {
+        DEVICE_GEOLOCATION,
+        MAP_SELECTION,
+        ADDRESS_SEARCH,
+        MANUAL_COORDINATES,
+        CAMERA_METADATA,
+        IMPORT,
+        UNKNOWN
+    }
+
     @Column(name = "camera_code", unique = true, nullable = false, length = 100)
     private String cameraCode;
 
@@ -71,4 +81,11 @@ public class Camera extends BaseEntity {
 
     @Column(name = "last_successful_frame")
     private Instant lastSuccessfulFrame;
+
+    @Enumerated(EnumType.STRING)
+    @Column(name = "location_source", length = 50)
+    private LocationSource locationSource;
+
+    @Column(name = "location_accuracy_meters")
+    private Double locationAccuracyMeters;
 }

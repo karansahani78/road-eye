@@ -1,9 +1,8 @@
 import React, { useState } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
-import { MapContainer, TileLayer, Marker, useMapEvents } from 'react-leaflet';
-import L from 'leaflet';
 import { cameraService } from '../services/cameraService';
+import CameraLocationSection, { LocationState } from '../components/CameraLocationSection';
 
 const CameraDetailPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
@@ -21,47 +20,18 @@ const CameraDetailPage: React.FC = () => {
     name: '',
     description: '',
     location: '',
-    latitude: 0,
-    longitude: 0,
     direction: '',
     processingFps: 15,
     active: true,
   });
 
-  const LocationPicker: React.FC<{ lat: number; lng: number; onChange: (lat: number, lng: number) => void }> = ({ lat, lng, onChange }) => {
-    const markerIcon = L.divIcon({
-      className: 'custom-marker-icon',
-      html: `<div style="width:20px;height:20px;background:#1e40af;border:3px solid #fff;border-radius:50%;box-shadow:0 2px 6px rgba(0,0,0,0.3);"></div>`,
-      iconSize: [20, 20],
-      iconAnchor: [10, 10],
-    });
-
-    const MapClickHandler = () => {
-      useMapEvents({
-        click(e) {
-          onChange(e.latlng.lat, e.latlng.lng);
-        },
-      });
-      return null;
-    };
-
-    const center: [number, number] = (lat !== 0 && lng !== 0) ? [lat, lng] : [27.7172, 85.3240];
-
-    return (
-      <div className="map-picker">
-        <MapContainer center={center} zoom={lat !== 0 ? 15 : 12} className="leaflet-map">
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
-          <MapClickHandler />
-          {lat !== 0 && lng !== 0 && (
-            <Marker position={[lat, lng]} icon={markerIcon} />
-          )}
-        </MapContainer>
-      </div>
-    );
-  };
+  const [cameraLocation, setCameraLocation] = useState<LocationState>({
+    latitude: null,
+    longitude: null,
+    locationSource: 'UNKNOWN',
+    locationAccuracyMeters: null,
+    address: '',
+  });
 
   const { data: camera, isLoading } = useQuery({
     queryKey: ['camera', id],
@@ -98,6 +68,7 @@ const CameraDetailPage: React.FC = () => {
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['camera', id] });
       queryClient.invalidateQueries({ queryKey: ['cameras'] });
+      queryClient.invalidateQueries({ queryKey: ['traffic-map'] });
       setEditing(false);
       alert('Camera updated');
     },
@@ -111,11 +82,16 @@ const CameraDetailPage: React.FC = () => {
       name: camera.name,
       description: camera.description || '',
       location: camera.location || '',
-      latitude: camera.latitude || 0,
-      longitude: camera.longitude || 0,
       direction: camera.direction || '',
       processingFps: camera.processingFps || 15,
       active: camera.active,
+    });
+    setCameraLocation({
+      latitude: camera.latitude || null,
+      longitude: camera.longitude || null,
+      locationSource: (camera.locationSource as LocationState['locationSource']) || 'UNKNOWN',
+      locationAccuracyMeters: camera.locationAccuracyMeters ?? null,
+      address: camera.location || '',
     });
     setEditing(true);
   };
@@ -126,12 +102,28 @@ const CameraDetailPage: React.FC = () => {
       cameraCode: camera.cameraCode,
       sourceType: camera.sourceType,
       ...editData,
+      latitude: cameraLocation.latitude,
+      longitude: cameraLocation.longitude,
+      locationSource: cameraLocation.locationSource,
+      locationAccuracyMeters: cameraLocation.locationAccuracyMeters,
     });
   };
 
   const handleCalibrate = (e: React.FormEvent) => {
     e.preventDefault();
     calibrateMutation.mutate(calibrationData);
+  };
+
+  const locationSourceLabel = (s: string | undefined): string => {
+    switch (s) {
+      case 'DEVICE_GEOLOCATION': return 'Current Device Location';
+      case 'MAP_SELECTION': return 'Map Selection';
+      case 'ADDRESS_SEARCH': return 'Address Search';
+      case 'MANUAL_COORDINATES': return 'Manual Entry';
+      case 'CAMERA_METADATA': return 'Camera Metadata';
+      case 'IMPORT': return 'Import';
+      default: return 'Unknown';
+    }
   };
 
   return (
@@ -157,26 +149,8 @@ const CameraDetailPage: React.FC = () => {
                 <label>Location</label>
                 <input value={editData.location} onChange={(e) => setEditData({ ...editData, location: e.target.value })} />
               </div>
-              <div className="form-group">
-                <label>Latitude</label>
-                <input type="number" step="any" value={editData.latitude}
-                  onChange={(e) => setEditData({ ...editData, latitude: parseFloat(e.target.value) || 0 })} />
-              </div>
-              <div className="form-group">
-                <label>Longitude</label>
-                <input type="number" step="any" value={editData.longitude}
-                  onChange={(e) => setEditData({ ...editData, longitude: parseFloat(e.target.value) || 0 })} />
-              </div>
               <div className="form-group full-width">
-                <label>Click on map to set coordinates</label>
-                <LocationPicker
-                  lat={editData.latitude}
-                  lng={editData.longitude}
-                  onChange={(lat, lng) => setEditData(prev => ({ ...prev, latitude: lat, longitude: lng }))}
-                />
-                <div className="coord-display">
-                  Lat: {editData.latitude.toFixed(6)}, Lng: {editData.longitude.toFixed(6)}
-                </div>
+                <CameraLocationSection location={cameraLocation} onChange={setCameraLocation} />
               </div>
               <div className="form-group">
                 <label>FPS</label>
@@ -199,7 +173,17 @@ const CameraDetailPage: React.FC = () => {
                 <dt>Code</dt><dd>{camera.cameraCode}</dd>
                 <dt>Type</dt><dd>{camera.sourceType}</dd>
                 <dt>Location</dt><dd>{camera.location || '-'}</dd>
-                <dt>Coordinates</dt><dd>{camera.latitude}, {camera.longitude}</dd>
+                <dt>Coordinates</dt><dd>
+                  {camera.latitude != null && camera.longitude != null
+                    ? `${camera.latitude.toFixed(6)}, ${camera.longitude.toFixed(6)}`
+                    : <span className="text-muted">Not configured</span>}
+                </dd>
+                <dt>Location Source</dt><dd>{locationSourceLabel(camera.locationSource)}</dd>
+                {camera.locationAccuracyMeters != null && (
+                  <>
+                    <dt>Accuracy</dt><dd>±{camera.locationAccuracyMeters.toFixed(0)}m</dd>
+                  </>
+                )}
                 <dt>Direction</dt><dd>{camera.direction || '-'}</dd>
                 <dt>Processing FPS</dt><dd>{camera.processingFps}</dd>
                 <dt>Resolution</dt><dd>{camera.resolution || '-'}</dd>

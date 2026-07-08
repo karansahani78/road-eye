@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { cameraService } from '../services/cameraService';
 import { Camera, StreamStatus } from '../types';
 
@@ -8,6 +9,7 @@ const LAYOUT_KEY = 'roadeye_live_layout';
 const SELECTED_KEY = 'roadeye_live_selected';
 
 const LiveMonitoringPage: React.FC = () => {
+  const [searchParams] = useSearchParams();
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>(() => {
     try { return JSON.parse(localStorage.getItem(SELECTED_KEY) || '[]'); }
@@ -33,6 +35,19 @@ const LiveMonitoringPage: React.FC = () => {
         setLoading(false);
       });
   }, []);
+
+  // Auto-select camera from URL query param (e.g. from Traffic Map)
+  useEffect(() => {
+    const cameraId = searchParams.get('cameraId');
+    if (cameraId && cameras.length > 0) {
+      const cameraExists = cameras.some(c => c.id === cameraId);
+      if (cameraExists && !selectedIds.includes(cameraId)) {
+        const updated = [...selectedIds, cameraId];
+        setSelectedIds(updated);
+        localStorage.setItem(SELECTED_KEY, JSON.stringify(updated));
+      }
+    }
+  }, [searchParams, cameras, selectedIds]);
 
   // Single centralized status poller
   useEffect(() => {

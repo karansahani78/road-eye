@@ -1,5 +1,6 @@
 package com.roadeye.camera.dto;
 
+import com.roadeye.camera.entity.Camera.LocationSource;
 import com.roadeye.camera.entity.Camera.SourceType;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -38,4 +39,8 @@ public class CameraRequest {
     private Integer processingFps;
 
     private boolean active;
+
+    private LocationSource locationSource;
+
+    private Double locationAccuracyMeters;
 }

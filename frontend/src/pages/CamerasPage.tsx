@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { useNavigate } from 'react-router-dom';
 import { cameraService } from '../services/cameraService';
 import { Camera } from '../types';
+import CameraLocationSection, { LocationState } from '../components/CameraLocationSection';
 
 const CamerasPage: React.FC = () => {
   const navigate = useNavigate();
@@ -16,11 +17,17 @@ const CamerasPage: React.FC = () => {
     sourceType: 'RTSP',
     sourceUrl: '',
     location: '',
-    latitude: 0,
-    longitude: 0,
     direction: '',
     processingFps: 15,
     active: true,
+  });
+
+  const [cameraLocation, setCameraLocation] = useState<LocationState>({
+    latitude: null,
+    longitude: null,
+    locationSource: 'UNKNOWN',
+    locationAccuracyMeters: null,
+    address: '',
   });
 
   const { data, isLoading } = useQuery({
@@ -32,6 +39,7 @@ const CamerasPage: React.FC = () => {
     mutationFn: (data: any) => cameraService.create(data),
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ['cameras'] });
+      queryClient.invalidateQueries({ queryKey: ['traffic-map'] });
       setShowForm(false);
       resetForm();
     },
@@ -45,14 +53,26 @@ const CamerasPage: React.FC = () => {
   const resetForm = () => {
     setFormData({
       cameraCode: '', name: '', description: '', sourceType: 'RTSP',
-      sourceUrl: '', location: '', latitude: 0, longitude: 0,
+      sourceUrl: '', location: '',
       direction: '', processingFps: 15, active: true,
+    });
+    setCameraLocation({
+      latitude: null, longitude: null,
+      locationSource: 'UNKNOWN', locationAccuracyMeters: null,
+      address: '',
     });
   };
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    createMutation.mutate(formData);
+    const payload = {
+      ...formData,
+      latitude: cameraLocation.latitude,
+      longitude: cameraLocation.longitude,
+      locationSource: cameraLocation.locationSource,
+      locationAccuracyMeters: cameraLocation.locationAccuracyMeters,
+    };
+    createMutation.mutate(payload);
   };
 
   const handleDelete = async (id: string, e: React.MouseEvent) => {
@@ -109,13 +129,8 @@ const CamerasPage: React.FC = () => {
               <label>Location</label>
               <input value={formData.location} onChange={(e) => setFormData({...formData, location: e.target.value})} />
             </div>
-            <div className="form-group">
-              <label>Latitude</label>
-              <input type="number" step="any" value={formData.latitude} onChange={(e) => setFormData({...formData, latitude: parseFloat(e.target.value) || 0})} />
-            </div>
-            <div className="form-group">
-              <label>Longitude</label>
-              <input type="number" step="any" value={formData.longitude} onChange={(e) => setFormData({...formData, longitude: parseFloat(e.target.value) || 0})} />
+            <div className="form-group full-width">
+              <CameraLocationSection location={cameraLocation} onChange={setCameraLocation} />
             </div>
             <div className="form-group">
               <label>FPS</label>

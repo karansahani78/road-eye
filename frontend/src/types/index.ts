@@ -50,6 +50,8 @@ export interface Camera {
   healthStatus: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'UNKNOWN';
   lastHeartbeat: string;
   lastSuccessfulFrame: string;
+  locationSource?: 'DEVICE_GEOLOCATION' | 'MAP_SELECTION' | 'ADDRESS_SEARCH' | 'MANUAL_COORDINATES' | 'CAMERA_METADATA' | 'IMPORT' | 'UNKNOWN';
+  locationAccuracyMeters?: number;
   createdAt: string;
   updatedAt?: string;
 }

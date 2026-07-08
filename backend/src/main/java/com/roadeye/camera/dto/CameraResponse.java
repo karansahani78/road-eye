@@ -1,6 +1,7 @@
 package com.roadeye.camera.dto;
 
 import com.roadeye.camera.entity.Camera.HealthStatus;
+import com.roadeye.camera.entity.Camera.LocationSource;
 import com.roadeye.camera.entity.Camera.SourceType;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
@@ -33,4 +34,8 @@ public class CameraResponse {
     private Instant lastSuccessfulFrame;
     private Instant createdAt;
     private Instant updatedAt;
+
+    private LocationSource locationSource;
+
+    private Double locationAccuracyMeters;
 }

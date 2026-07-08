@@ -64,4 +64,14 @@ export const cameraService = {
     if (ts) return `${base}?_=${ts}`;
     return base;
   },
+
+  geocode: async (query: string, limit: number = 10): Promise<any[]> => {
+    const response = await api.post('/cameras/location/geocode', { query, limit });
+    return response.data.data;
+  },
+
+  reverseGeocode: async (latitude: number, longitude: number): Promise<any> => {
+    const response = await api.post('/cameras/location/reverse-geocode', { latitude, longitude });
+    return response.data.data;
+  },
 };

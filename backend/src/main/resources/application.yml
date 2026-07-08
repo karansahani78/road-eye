@@ -67,6 +67,13 @@ ai:
   service:
     url: ${AI_SERVICE_URL:http://localhost:8000}
 
+geocoding:
+  provider: ${GEOCODING_PROVIDER:nominatim}
+  nominatim:
+    endpoint: ${NOMINATIM_ENDPOINT:https://nominatim.openstreetmap.org}
+    user-agent: ${NOMINATIM_USER_AGENT:RoadEye/1.0}
+    rate-limit-ms: 1100
+
 kafka:
   topics:
     camera-health: camera-health

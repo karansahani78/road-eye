@@ -6,6 +6,7 @@ import com.roadeye.camera.dto.CameraHealthEventResponse;
 import com.roadeye.camera.dto.CameraRequest;
 import com.roadeye.camera.dto.CameraResponse;
 import com.roadeye.camera.entity.Camera;
+import com.roadeye.camera.entity.Camera.LocationSource;
 import com.roadeye.camera.entity.Camera.SourceType;
 import com.roadeye.camera.entity.CameraCalibration;
 import com.roadeye.camera.entity.CameraHealthEvent;
@@ -60,6 +61,8 @@ public class CameraService {
         camera.setDirection(request.getDirection());
         camera.setProcessingFps(request.getProcessingFps() != null ? request.getProcessingFps() : 15);
         camera.setActive(request.isActive());
+        camera.setLocationSource(request.getLocationSource());
+        camera.setLocationAccuracyMeters(request.getLocationAccuracyMeters());
 
         if (request.getSourceUrl() != null) {
             camera.setSourceUrlEncrypted(request.getSourceUrl());
@@ -82,6 +85,8 @@ public class CameraService {
         camera.setDirection(request.getDirection());
         camera.setProcessingFps(request.getProcessingFps() != null ? request.getProcessingFps() : 15);
         camera.setActive(request.isActive());
+        camera.setLocationSource(request.getLocationSource());
+        camera.setLocationAccuracyMeters(request.getLocationAccuracyMeters());
 
         if (request.getSourceUrl() != null) {
             camera.setSourceUrlEncrypted(request.getSourceUrl());
@@ -237,6 +242,8 @@ public class CameraService {
                 .healthStatus(camera.getHealthStatus())
                 .lastHeartbeat(camera.getLastHeartbeat())
                 .lastSuccessfulFrame(camera.getLastSuccessfulFrame())
+                .locationSource(camera.getLocationSource())
+                .locationAccuracyMeters(camera.getLocationAccuracyMeters())
                 .createdAt(camera.getCreatedAt())
                 .updatedAt(camera.getUpdatedAt())
                 .build();
