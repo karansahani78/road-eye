@@ -14,17 +14,23 @@ import com.roadeye.camera.repository.CameraCalibrationRepository;
 import com.roadeye.camera.repository.CameraHealthEventRepository;
 import com.roadeye.camera.repository.CameraRepository;
 import com.roadeye.shared.BadRequestException;
+import com.roadeye.shared.EncryptionService;
 import com.roadeye.shared.ResourceNotFoundException;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import jakarta.annotation.PostConstruct;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
+import org.springframework.util.StringUtils;
 
 import java.io.IOException;
 import java.net.Socket;
 import java.net.URI;
 import java.time.Instant;
 import java.util.HashMap;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 import java.util.UUID;
@@ -33,25 +39,73 @@ import java.util.UUID;
 @Transactional
 public class CameraService {
 
+    private static final Logger log = LoggerFactory.getLogger(CameraService.class);
+
     private final CameraRepository cameraRepository;
     private final CameraCalibrationRepository cameraCalibrationRepository;
     private final CameraHealthEventRepository cameraHealthEventRepository;
+    private final EncryptionService encryptionService;
 
     public CameraService(CameraRepository cameraRepository,
                          CameraCalibrationRepository cameraCalibrationRepository,
-                         CameraHealthEventRepository cameraHealthEventRepository) {
+                         CameraHealthEventRepository cameraHealthEventRepository,
+                         EncryptionService encryptionService) {
         this.cameraRepository = cameraRepository;
         this.cameraCalibrationRepository = cameraCalibrationRepository;
         this.cameraHealthEventRepository = cameraHealthEventRepository;
+        this.encryptionService = encryptionService;
+    }
+
+    @PostConstruct
+    @Transactional
+    public void migrateExistingCredentials() {
+        List<Camera> all = cameraRepository.findAll();
+        int migrated = 0;
+        for (Camera camera : all) {
+            String raw = camera.getSourceUrlEncrypted();
+            if (StringUtils.hasText(raw) && !encryptionService.isEncrypted(raw)) {
+                camera.setSourceUrlEncrypted(encryptionService.encrypt(raw));
+                migrated++;
+            }
+        }
+        if (migrated > 0) {
+            cameraRepository.saveAll(all);
+            log.info("Migrated {} existing camera credentials to encrypted storage", migrated);
+        }
     }
 
     public CameraResponse createCamera(CameraRequest request) {
-        if (cameraRepository.existsByCameraCode(request.getCameraCode())) {
-            throw new BadRequestException("Camera code already exists: " + request.getCameraCode());
+        String trimmedCode = request.getCameraCode().trim();
+        Optional<Camera> existingOpt = cameraRepository.findByCameraCode(trimmedCode);
+        if (existingOpt.isPresent()) {
+            Camera existing = existingOpt.get();
+            if (existing.isActive()) {
+                throw new BadRequestException("Camera code already exists: " + trimmedCode);
+            }
+            // Reactivate deactivated camera, preserving existing UUID and evidence references
+            existing.setActive(true);
+            existing.setName(request.getName());
+            existing.setDescription(request.getDescription());
+            existing.setSourceType(request.getSourceType());
+            existing.setLocation(request.getLocation());
+            existing.setLatitude(request.getLatitude());
+            existing.setLongitude(request.getLongitude());
+            existing.setDirection(request.getDirection());
+            existing.setProcessingFps(request.getProcessingFps() != null ? request.getProcessingFps() : 15);
+            existing.setLocationSource(request.getLocationSource());
+            existing.setLocationAccuracyMeters(request.getLocationAccuracyMeters());
+            existing.setHealthStatus(Camera.HealthStatus.UNKNOWN);
+
+            if (StringUtils.hasText(request.getSourceUrl())) {
+                existing.setSourceUrlEncrypted(encryptionService.encrypt(request.getSourceUrl()));
+            }
+
+            existing = cameraRepository.save(existing);
+            return mapToCameraResponse(existing);
         }
 
         Camera camera = new Camera();
-        camera.setCameraCode(request.getCameraCode());
+        camera.setCameraCode(trimmedCode);
         camera.setName(request.getName());
         camera.setDescription(request.getDescription());
         camera.setSourceType(request.getSourceType());
@@ -64,18 +118,37 @@ public class CameraService {
         camera.setLocationSource(request.getLocationSource());
         camera.setLocationAccuracyMeters(request.getLocationAccuracyMeters());
 
-        if (request.getSourceUrl() != null) {
-            camera.setSourceUrlEncrypted(request.getSourceUrl());
+        if (StringUtils.hasText(request.getSourceUrl())) {
+            camera.setSourceUrlEncrypted(encryptionService.encrypt(request.getSourceUrl()));
         }
 
         camera = cameraRepository.save(camera);
         return mapToCameraResponse(camera);
     }
 
+    public CameraResponse updateSourceUrl(UUID id, String sourceUrl) {
+        if (!StringUtils.hasText(sourceUrl)) {
+            throw new BadRequestException("Source URL must not be empty");
+        }
+        Camera camera = cameraRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", id));
+        camera.setSourceUrlEncrypted(encryptionService.encrypt(sourceUrl));
+        camera.setHealthStatus(Camera.HealthStatus.UNKNOWN);
+        camera = cameraRepository.save(camera);
+        return mapToCameraResponse(camera);
+    }
+
+    public String getDecryptedSourceUrl(Camera camera) {
+        return encryptionService.decrypt(camera.getSourceUrlEncrypted());
+    }
+
     public CameraResponse updateCamera(UUID id, CameraRequest request) {
         Camera camera = cameraRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", id));
 
+        // Trim camera code to prevent whitespace-induced duplicates
+        String trimmedCode = request.getCameraCode().trim();
+        camera.setCameraCode(trimmedCode);
         camera.setName(request.getName());
         camera.setDescription(request.getDescription());
         camera.setSourceType(request.getSourceType());
@@ -88,8 +161,8 @@ public class CameraService {
         camera.setLocationSource(request.getLocationSource());
         camera.setLocationAccuracyMeters(request.getLocationAccuracyMeters());
 
-        if (request.getSourceUrl() != null) {
-            camera.setSourceUrlEncrypted(request.getSourceUrl());
+        if (StringUtils.hasText(request.getSourceUrl())) {
+            camera.setSourceUrlEncrypted(encryptionService.encrypt(request.getSourceUrl()));
         }
 
         camera = cameraRepository.save(camera);
@@ -110,6 +183,13 @@ public class CameraService {
     @Transactional(readOnly = true)
     public Page<CameraResponse> getCameras(Pageable pageable) {
         return cameraRepository.findAll(pageable).map(this::mapToCameraResponse);
+    }
+
+    public void updateCameraHealth(UUID id, Camera.HealthStatus status) {
+        Camera camera = cameraRepository.findById(id)
+                .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", id));
+        camera.setHealthStatus(status);
+        cameraRepository.save(camera);
     }
 
     public void deleteCamera(UUID id) {
@@ -133,6 +213,7 @@ public class CameraService {
         int port = -1;
 
         if (sourceUrl != null && !sourceUrl.isBlank()) {
+            String sanitizedUrl = sanitizeSourceUrl(sourceUrl);
             try {
                 URI uri = URI.create(sourceUrl);
                 host = uri.getHost();
@@ -160,7 +241,7 @@ public class CameraService {
                 }
             } else {
                 result.put("status", "unchecked");
-                result.put("message", "Cannot parse host/port from: " + sourceUrl);
+                result.put("message", "Cannot parse host/port from: " + sanitizedUrl);
             }
         } else {
             result.put("status", "unconfigured");
@@ -169,6 +250,19 @@ public class CameraService {
 
         result.put("testedAt", Instant.now());
         return result;
+    }
+
+    private static String sanitizeSourceUrl(String url) {
+        if (url == null) return null;
+        try {
+            URI uri = URI.create(url);
+            String userInfo = uri.getUserInfo();
+            if (userInfo != null) {
+                return url.replaceFirst(userInfo + "@", "****:****@");
+            }
+        } catch (Exception ignored) {
+        }
+        return url;
     }
 
     @Transactional(readOnly = true)
@@ -244,6 +338,7 @@ public class CameraService {
                 .lastSuccessfulFrame(camera.getLastSuccessfulFrame())
                 .locationSource(camera.getLocationSource())
                 .locationAccuracyMeters(camera.getLocationAccuracyMeters())
+                .sourceUrlConfigured(camera.getSourceUrlEncrypted() != null && !camera.getSourceUrlEncrypted().isBlank())
                 .createdAt(camera.getCreatedAt())
                 .updatedAt(camera.getUpdatedAt())
                 .build();

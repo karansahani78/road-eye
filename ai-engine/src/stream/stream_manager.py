@@ -1,8 +1,10 @@
 import asyncio
 import logging
+import socket
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Dict, Optional
+from urllib.parse import urlparse
 
 import cv2
 import numpy as np
@@ -19,7 +21,58 @@ class StreamStartResult(Enum):
     SUCCESS = "success"
     STREAM_ALREADY_EXISTS = "stream_already_exists"
     CONNECTION_FAILED = "connection_failed"
+    CONNECTION_FAILED_AUTH = "connection_failed_auth"
+    CONNECTION_FAILED_UNREACHABLE = "connection_failed_unreachable"
     ERROR = "error"
+
+
+def _diagnose_rtsp_error(source_url: str) -> str:
+    """Classify RTSP connection failure reason without exposing credentials."""
+    try:
+        parsed = urlparse(source_url)
+        hostname = parsed.hostname
+        if not hostname:
+            return "INVALID_SOURCE_URL"
+
+        port = parsed.port or 554
+
+        # Test TCP connectivity
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(5.0)
+        try:
+            result = sock.connect_ex((hostname, port))
+        finally:
+            sock.close()
+
+        if result != 0:
+            return "CONNECTION_REFUSED"
+
+        # Socket connects — TCP is fine. Likely auth or stream path issue.
+        if parsed.username and parsed.password:
+            return "AUTHENTICATION_FAILED"
+
+        return "STREAM_NOT_FOUND"
+    except Exception:
+        return "UNKNOWN_CONNECTION_ERROR"
+
+
+def _sanitize_url(url: str) -> str:
+    """Strip password from RTSP URL for safe logging."""
+    if not url:
+        return url
+    try:
+        at_idx = url.find('@')
+        if at_idx > 0:
+            scheme_end = url.find('://')
+            if scheme_end >= 0:
+                userinfo_end = scheme_end + 3
+                colon_idx = url.find(':', userinfo_end)
+                if 0 < colon_idx < at_idx:
+                    safe = url[:colon_idx + 1] + '****' + url[at_idx:]
+                    return safe
+    except Exception:
+        pass
+    return url
 
 
 class StreamManager:
@@ -56,7 +109,12 @@ class StreamManager:
         test_cap = cv2.VideoCapture(source_url)
         if not test_cap.isOpened():
             test_cap.release()
-            logger.error(f"Failed to open video source for camera {camera_id}: {source_url}")
+            logger.error(f"Failed to open video source for camera {camera_id}: source_url={_sanitize_url(source_url)}")
+            error_type = _diagnose_rtsp_error(source_url)
+            if error_type == "AUTHENTICATION_FAILED":
+                return StreamStartResult.CONNECTION_FAILED_AUTH
+            elif error_type == "CONNECTION_REFUSED":
+                return StreamStartResult.CONNECTION_FAILED_UNREACHABLE
             return StreamStartResult.CONNECTION_FAILED
         test_cap.release()
 
@@ -71,7 +129,7 @@ class StreamManager:
         task = asyncio.create_task(processor.run())
         self._tasks[camera_id] = task
 
-        logger.info(f"Stream started for camera {camera_id}")
+        logger.info(f"Stream started for camera {camera_id}: source_url={_sanitize_url(source_url)}")
         return StreamStartResult.SUCCESS
 
     async def stop_stream(self, camera_id: str) -> bool:

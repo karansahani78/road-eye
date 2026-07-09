@@ -70,6 +70,10 @@ ai:
   service:
     url: ${AI_SERVICE_URL:http://localhost:8000}
 
+app:
+  encryption:
+    key: ${APP_ENCRYPTION_KEY:change-me-in-production-32bytes!}
+
 geocoding:
   provider: ${GEOCODING_PROVIDER:nominatim}
   nominatim:

@@ -23,6 +23,7 @@ const CameraDetailPage: React.FC = () => {
     direction: '',
     processingFps: 15,
     active: true,
+    sourceUrl: '',
   });
 
   const [cameraLocation, setCameraLocation] = useState<LocationState>({
@@ -74,6 +75,28 @@ const CameraDetailPage: React.FC = () => {
     },
   });
 
+  const [credentialForm, setCredentialForm] = useState({ sourceUrl: '' });
+  const updateCredentialsMutation = useMutation({
+    mutationFn: (sourceUrl: string) => cameraService.updateSourceUrl(id!, sourceUrl),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: ['camera', id] });
+      setCredentialForm({ sourceUrl: '' });
+      alert('Camera credentials updated');
+    },
+    onError: (err: any) => {
+      alert('Failed to update credentials: ' + (err?.response?.data?.message || err.message));
+    },
+  });
+
+  const handleUpdateCredentials = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!credentialForm.sourceUrl.trim()) {
+      alert('Source URL is required');
+      return;
+    }
+    updateCredentialsMutation.mutate(credentialForm.sourceUrl);
+  };
+
   if (isLoading) return <div className="loading">Loading...</div>;
   if (!camera) return <div className="error">Camera not found</div>;
 
@@ -85,6 +108,7 @@ const CameraDetailPage: React.FC = () => {
       direction: camera.direction || '',
       processingFps: camera.processingFps || 15,
       active: camera.active,
+      sourceUrl: '',
     });
     setCameraLocation({
       latitude: camera.latitude || null,
@@ -158,6 +182,12 @@ const CameraDetailPage: React.FC = () => {
                   onChange={(e) => setEditData({ ...editData, processingFps: parseInt(e.target.value) || 15 })} />
               </div>
               <div className="form-group">
+                <label>Source URL {camera.sourceUrlConfigured ? '(leave blank to keep current)' : '* required'}</label>
+                <input value={editData.sourceUrl}
+                  onChange={(e) => setEditData({ ...editData, sourceUrl: e.target.value })}
+                  placeholder={camera.sourceUrlConfigured ? 'rtsp://… (leave blank to keep current)' : 'rtsp://…'} />
+              </div>
+              <div className="form-group">
                 <label>
                   <input type="checkbox" checked={editData.active}
                     onChange={(e) => setEditData({ ...editData, active: e.target.checked })} />
@@ -187,6 +217,7 @@ const CameraDetailPage: React.FC = () => {
                 <dt>Direction</dt><dd>{camera.direction || '-'}</dd>
                 <dt>Processing FPS</dt><dd>{camera.processingFps}</dd>
                 <dt>Resolution</dt><dd>{camera.resolution || '-'}</dd>
+                <dt>Source URL</dt><dd>{camera.sourceUrlConfigured ? 'Configured' : <span className="text-muted">Not configured</span>}</dd>
                 <dt>Active</dt><dd>{camera.active ? 'Yes' : 'No'}</dd>
               </dl>
               <button className="btn-secondary" onClick={startEditing}>Edit Camera</button>
@@ -253,13 +284,38 @@ const CameraDetailPage: React.FC = () => {
         </div>
 
         <div className="detail-card">
+          <h3>Credentials</h3>
+          {camera.sourceUrlConfigured ? (
+            <p className="text-muted">Source URL is configured (credentials are encrypted at rest).</p>
+          ) : (
+            <p className="text-warning">No source URL configured.</p>
+          )}
+          <form onSubmit={handleUpdateCredentials}>
+            <div className="form-group">
+              <label>RTSP Source URL</label>
+              <input
+                type="text"
+                value={credentialForm.sourceUrl}
+                onChange={(e) => setCredentialForm({ sourceUrl: e.target.value })}
+                placeholder="rtsp://username:password@camera-ip:554/stream"
+              />
+            </div>
+            <button type="submit" className="btn-primary" disabled={updateCredentialsMutation.isPending}>
+              {updateCredentialsMutation.isPending ? 'Updating...' : 'Update Credentials'}
+            </button>
+          </form>
+        </div>
+
+        <div className="detail-card">
           <h3>Actions</h3>
           <button className="btn-secondary" onClick={() => testConnectionMutation.mutate()}
             disabled={testConnectionMutation.isPending}>
             {testConnectionMutation.isPending ? 'Testing...' : 'Test Connection'}
           </button>
           {testConnectionMutation.data && (
-            <pre className="test-result">{JSON.stringify(testConnectionMutation.data, null, 2)}</pre>
+            <div className="test-result">
+              <pre>{JSON.stringify(testConnectionMutation.data, null, 2)}</pre>
+            </div>
           )}
         </div>
       </div>

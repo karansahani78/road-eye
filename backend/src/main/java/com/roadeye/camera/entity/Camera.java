@@ -22,7 +22,7 @@ public class Camera extends BaseEntity {
     }
 
     public enum HealthStatus {
-        ONLINE, OFFLINE, DEGRADED, UNKNOWN
+        ONLINE, OFFLINE, DEGRADED, ERROR, CONNECTING, UNKNOWN
     }
 
     public enum LocationSource {

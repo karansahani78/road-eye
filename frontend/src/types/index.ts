@@ -40,7 +40,8 @@ export interface Camera {
   name: string;
   description: string;
   sourceType: 'RTSP' | 'VIDEO_FILE' | 'CCTV' | 'IP_CAMERA';
-  sourceUrl: string;
+  sourceUrl?: string;
+  sourceUrlConfigured?: boolean;
   location: string;
   latitude: number;
   longitude: number;
@@ -48,7 +49,7 @@ export interface Camera {
   processingFps: number;
   resolution: string;
   active: boolean;
-  healthStatus: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'UNKNOWN';
+  healthStatus: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'ERROR' | 'CONNECTING' | 'UNKNOWN';
   lastHeartbeat: string;
   lastSuccessfulFrame: string;
   locationSource?: 'DEVICE_GEOLOCATION' | 'MAP_SELECTION' | 'ADDRESS_SEARCH' | 'MANUAL_COORDINATES' | 'CAMERA_METADATA' | 'IMPORT' | 'UNKNOWN';

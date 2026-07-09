@@ -1,4 +1,5 @@
 import logging
+from datetime import datetime, timezone
 from typing import List, Optional
 import cv2
 import numpy as np
@@ -123,5 +124,6 @@ class VehicleDetector:
                     class_id=class_id,
                     class_name=class_name,
                     mapped_category=mapped,
+                    timestamp=datetime.now(timezone.utc),
                 ))
         return detections

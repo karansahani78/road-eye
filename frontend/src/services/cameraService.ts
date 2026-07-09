@@ -65,6 +65,11 @@ export const cameraService = {
     return base;
   },
 
+  updateSourceUrl: async (id: string, sourceUrl: string): Promise<Camera> => {
+    const response = await api.patch<ApiResponse<Camera>>(`/cameras/${id}/source-url`, { sourceUrl });
+    return response.data.data;
+  },
+
   geocode: async (query: string, limit: number = 10): Promise<any[]> => {
     const response = await api.post('/cameras/location/geocode', { query, limit });
     return response.data.data;

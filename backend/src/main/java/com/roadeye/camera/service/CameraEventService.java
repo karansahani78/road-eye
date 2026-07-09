@@ -6,6 +6,7 @@ import com.roadeye.camera.entity.CameraHealthEvent;
 import com.roadeye.camera.repository.CameraCalibrationRepository;
 import com.roadeye.camera.repository.CameraHealthEventRepository;
 import com.roadeye.camera.repository.CameraRepository;
+import com.roadeye.shared.EncryptionService;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
@@ -32,6 +33,7 @@ public class CameraEventService {
     private final CameraCalibrationRepository cameraCalibrationRepository;
     private final CameraHealthEventRepository healthEventRepository;
     private final RestTemplate restTemplate;
+    private final EncryptionService encryptionService;
 
     @Value("${ai.service.url:http://localhost:8000}")
     private String aiServiceUrl;
@@ -39,20 +41,24 @@ public class CameraEventService {
     public CameraEventService(CameraRepository cameraRepository,
                               CameraCalibrationRepository cameraCalibrationRepository,
                               CameraHealthEventRepository healthEventRepository,
-                              RestTemplate restTemplate) {
+                              RestTemplate restTemplate,
+                              EncryptionService encryptionService) {
         this.cameraRepository = cameraRepository;
         this.cameraCalibrationRepository = cameraCalibrationRepository;
         this.healthEventRepository = healthEventRepository;
         this.restTemplate = restTemplate;
+        this.encryptionService = encryptionService;
     }
 
     public void startCameraStream(Camera camera) {
         try {
             String url = aiServiceUrl + "/api/v1/streams/start";
 
+            String decryptedUrl = encryptionService.decrypt(camera.getSourceUrlEncrypted());
+
             Map<String, Object> body = new HashMap<>();
             body.put("camera_id", camera.getId().toString());
-            body.put("source_url", camera.getSourceUrlEncrypted());
+            body.put("source_url", decryptedUrl);
             body.put("fps", camera.getProcessingFps() != null ? camera.getProcessingFps() : 15);
 
             // Include calibration if available
@@ -60,7 +66,6 @@ public class CameraEventService {
             if (calibration.isPresent()) {
                 CameraCalibration cal = calibration.get();
                 body.put("known_distance_m", cal.getKnownDistance());
-                // Compute pixel distance from reference points
                 Double referencePixels = computeReferencePixels(cal.getReferencePoint1(), cal.getReferencePoint2());
                 if (referencePixels != null) {
                     body.put("reference_pixels", referencePixels);
@@ -77,11 +82,27 @@ public class CameraEventService {
         } catch (org.springframework.web.client.HttpStatusCodeException e) {
             String errorBody = e.getResponseBodyAsString();
             log.error("AI Engine returned {} for camera {}: {}", e.getStatusCode(), camera.getId(), errorBody);
-            throw new RuntimeException(e.getStatusCode().value() + ": " + errorBody, e);
+            String classification = classifyAiEngineError(e.getStatusCode().value(), errorBody);
+            throw new RuntimeException(e.getStatusCode().value() + ": " + classification + ": " + errorBody, e);
         } catch (Exception e) {
             log.error("Failed to start AI stream for camera {}: {}", camera.getId(), e.getMessage());
             throw new RuntimeException("Failed to start camera stream: " + e.getMessage(), e);
         }
+    }
+
+    private String classifyAiEngineError(int statusCode, String errorBody) {
+        if (errorBody == null) return "UNKNOWN";
+        String lower = errorBody.toLowerCase();
+        if (lower.contains("auth") || lower.contains("401") || lower.contains("unauthorized")) {
+            return "Camera authentication failed";
+        }
+        if (lower.contains("unreachable") || lower.contains("refused") || lower.contains("timeout")) {
+            return "Camera host unreachable";
+        }
+        if (lower.contains("not found") || lower.contains("404")) {
+            return "Camera stream not found";
+        }
+        return "AI Engine error (" + statusCode + ")";
     }
 
     private Double computeReferencePixels(String point1, String point2) {

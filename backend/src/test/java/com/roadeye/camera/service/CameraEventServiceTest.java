@@ -5,6 +5,7 @@ import com.roadeye.camera.entity.CameraCalibration;
 import com.roadeye.camera.repository.CameraCalibrationRepository;
 import com.roadeye.camera.repository.CameraHealthEventRepository;
 import com.roadeye.camera.repository.CameraRepository;
+import com.roadeye.shared.EncryptionService;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.extension.ExtendWith;
@@ -25,6 +26,8 @@ class CameraEventServiceTest {
     private CameraHealthEventRepository healthEventRepository;
     @Mock
     private RestTemplate restTemplate;
+    @Mock
+    private EncryptionService encryptionService;
 
     private CameraEventService cameraEventService;
 
@@ -32,7 +35,7 @@ class CameraEventServiceTest {
     void setUp() {
         cameraEventService = new CameraEventService(
                 cameraRepository, cameraCalibrationRepository,
-                healthEventRepository, restTemplate);
+                healthEventRepository, restTemplate, encryptionService);
     }
 
     @Test

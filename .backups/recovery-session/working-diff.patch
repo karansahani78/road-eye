@@ -1,0 +1,1966 @@
+diff --git a/AGENTS.md b/AGENTS.md
+index a3b8272..7180ade 100644
+--- a/AGENTS.md
++++ b/AGENTS.md
+@@ -54,6 +54,24 @@
+ ### FIXED IN SESSION 5 (2026-07-09)
+ - **YOLO class mapping bug — motorcycle shown as CAR:** Fixed `COCO_TO_ROADEYE` and `COCO_CLASS_NAMES` dictionaries in `vehicle_detector.py` that used wrong class IDs (2→MOTORCYCLE, 3→CAR, 4→BUS, 5→TRUCK) that didn't match the actual YOLOv8n COCO model indices (2=car, 3=motorcycle, 5=bus, 7=truck). Corrected all mappings and added `_verify_class_mapping()` method that dynamically checks the loaded model's `model.names` against code constants at startup and logs errors on mismatch. Updated test to expect correct model IDs. AI Engine tests: 20/20 pass.
+ 
++### FIXED IN SESSION 6 (2026-07-09) — End-to-End Pipeline Audit
++- **Detection confidence threshold lowered:** 0.5→0.3 — YOLOv8n (nano) produces lower confidence on small/distant vehicles; tracker's `min_hits=3` + NMS (iou=0.5) already filters temporal noise. Recovers valid detections that 0.5 rejected.
++- **Trajectory now includes timestamps:** TrackState trajectory changed from `(cx, cy)` to `(cx, cy, timestamp)`. Speed estimator uses actual time deltas instead of assuming constant frame interval. Fixes speed calculation when frames are skipped or FPS varies.
++- **Detection objects get timestamps:** `Detection.timestamp` now populated with `datetime.now(timezone.utc)` when created in vehicle_detector.
++- **Speed diagnostics added:** `SpeedEstimator.diagnostic_status()` and `diagnostic_track_status()` return exact reasons for speed unavailability (`SPEED_UNAVAILABLE_NO_CALIBRATION`, `SPEED_UNAVAILABLE_INSUFFICIENT_HISTORY`, `SPEED_UNAVAILABLE_TRACK_LOST`, `SPEED_AVAILABLE`). Speed status displayed on annotated frames.
++- **Annotation rendering improved:** Label background with padding for readability; adaptive font scale/thickness based on frame width; speed status displayed in overlay (green=available, yellow=unavailable).
++- **Plate detector audit:** Confirmed no dedicated license plate detection model exists. Current code crops bottom 45% of vehicle bbox and runs EasyOCR directly — no real plate localization model. ANPR will not work reliably for real-world use until a dedicated plate detector is added.
++
++### REMAINING TECHNICAL LIMITATIONS
++- **No dedicated license plate detection model** — ANPR uses naive bbox-bottom-crop + EasyOCR, unreliable for real scenes
++- **YOLOv8n is the smallest variant** — limited accuracy for small/distant objects; upgrade to v8m or v8l improves detection but increases latency
++- **No Nepal-specific fine-tuning** — COCO pretrained weights only; Nepal traffic scenes (microbuses, auto-rickshaws, unique plate formats) not covered
++- **Speed requires explicit calibration** — no calibration stored in DB is auto-loaded; N/A until calibrate API called
++- **Analytics queries use N+1 anti-pattern** — traffic-volume (168 queries for 7d), violation-trends (60 queries for 30d)
++- **No consumer retry/DLQ** — poisoned Kafka messages silently skipped
++- **No GPU utilization** — CPU-only inference limits throughput
++- **Backend has no stream registry** — cannot reconcile orphaned AI Engine streams
++
+ ### STILL TO VERIFY
+ - End-to-end runtime test with real RTSP camera
+ - Database flooding verification (measure row counts over 60s)
+diff --git a/ai-engine/src/common/models.py b/ai-engine/src/common/models.py
+index aa63831..dd9b1ce 100644
+--- a/ai-engine/src/common/models.py
++++ b/ai-engine/src/common/models.py
+@@ -68,6 +68,11 @@ class Track(BaseModel):
+     hit_count: int = 0
+ 
+ 
++class PlateDetection(BaseModel):
++    bbox: List[float]
++    confidence: float
++
++
+ class PlateResult(BaseModel):
+     plate_text: str
+     normalized_plate: str
+@@ -80,6 +85,14 @@ class PlateResult(BaseModel):
+     alternatives: Optional[List[str]] = None
+     detector_version: Optional[str] = None
+     ocr_model_version: Optional[str] = None
++    plate_detector_version: Optional[str] = None
++
++
++class HelmetResult(BaseModel):
++    bbox: List[float]
++    confidence: float
++    has_helmet: bool
++    class_id: int
+ 
+ 
+ class SpeedMeasurement(BaseModel):
+@@ -125,6 +138,7 @@ class ViolationCandidate(BaseModel):
+ 
+ 
+ class VehicleObservation(BaseModel):
++    model_config = {'protected_namespaces': ()}
+     camera_id: str
+     timestamp: datetime
+     track_id: int
+diff --git a/ai-engine/src/config.py b/ai-engine/src/config.py
+index 5c5d060..735856c 100644
+--- a/ai-engine/src/config.py
++++ b/ai-engine/src/config.py
+@@ -1,5 +1,6 @@
+-from pydantic_settings import BaseSettings
+ from typing import Optional
++from pydantic_settings import BaseSettings
++from pydantic import ConfigDict
+ 
+ 
+ class Settings(BaseSettings):
+@@ -16,14 +17,28 @@ class Settings(BaseSettings):
+     LOG_LEVEL: str = "INFO"
+ 
+     # Detection
+-    DETECTION_CONFIDENCE_THRESHOLD: float = 0.5
++    # YOLOv8n (nano) produces lower-confidence predictions, especially for
++    # small/distant vehicles. 0.3 recovers valid detections that 0.5 rejects.
++    # The tracker's min_hits=3 + NMS (iou=0.5) already filter noise.
++    DETECTION_CONFIDENCE_THRESHOLD: float = 0.3
+     DETECTION_IOU_THRESHOLD: float = 0.5
+     DETECTION_IMAGE_SIZE: int = 640
+     DETECTION_MAX_DETECTIONS: int = 100
+     DETECTION_DEVICE: str = ""
++    # Run YOLO detection every N frames (1 = every frame, 2 = every other)
++    DETECTION_FRAME_SKIP: int = 2
+ 
+     # Plate
+     PLATE_DETECTION_CONFIDENCE: float = 0.3
++    PLATE_MODEL_PATH: str = "models/plate.pt"
++    # Run OCR on a given track at most once per N frames
++    OCR_TRACK_INTERVAL: int = 10
++
++    # Helmet
++    HELMET_DETECTION_CONFIDENCE: float = 0.3
++    HELMET_MODEL_PATH: str = "models/helmet.pt"
++    # Temporal confirmation: N consecutive frames with no-helmet before issuing violation
++    HELMET_TEMPORAL_WINDOW: int = 5
+ 
+     # Tracking
+     TRACK_MAX_LOST: float = 5.0
+@@ -34,16 +49,28 @@ class Settings(BaseSettings):
+     SPEED_ESTIMATION_ENABLED: bool = True
+     PLATE_RECOGNITION_ENABLED: bool = True
+     VIOLATION_DETECTION_ENABLED: bool = True
++    HELMET_DETECTION_ENABLED: bool = True
+ 
+     # Processing
+     MAX_PROCESSING_FPS: int = 30
+-    FRAME_WIDTH: int = 1280
+-    FRAME_HEIGHT: int = 720
++    # 0 = keep original camera resolution; set to e.g. 1280x720 to cap
++    FRAME_WIDTH: int = 0
++    FRAME_HEIGHT: int = 0
++
++    # JPEG quality settings
++    MJPEG_QUALITY: int = 75
++    FRAME_QUALITY: int = 85
++    EVIDENCE_QUALITY: int = 90
++
++    # Diagnostic mode (development only — shows overlay metrics)
++    ENABLE_DIAGNOSTIC_MODE: bool = False
+ 
+     # Security
+     API_KEY: str = ""
+     """If non-empty, all endpoints require X-API-Key header matching this value."""
+ 
+-    class Config:
+-        env_file = ".env"
+-        env_file_encoding = "utf-8"
++    model_config = ConfigDict(
++        env_file=".env",
++        env_file_encoding="utf-8",
++        extra="ignore",
++    )
+diff --git a/ai-engine/src/detection/vehicle_detector.py b/ai-engine/src/detection/vehicle_detector.py
+index 67a6611..e07b07d 100644
+--- a/ai-engine/src/detection/vehicle_detector.py
++++ b/ai-engine/src/detection/vehicle_detector.py
+@@ -1,4 +1,5 @@
+ import logging
++from datetime import datetime, timezone
+ from typing import List, Optional
+ import cv2
+ import numpy as np
+@@ -123,5 +124,6 @@ class VehicleDetector:
+                     class_id=class_id,
+                     class_name=class_name,
+                     mapped_category=mapped,
++                    timestamp=datetime.now(timezone.utc),
+                 ))
+         return detections
+diff --git a/ai-engine/src/main.py b/ai-engine/src/main.py
+index 077faf3..631354a 100644
+--- a/ai-engine/src/main.py
++++ b/ai-engine/src/main.py
+@@ -142,6 +142,20 @@ async def start_stream(req: StreamStartRequest, api_key: str = Depends(verify_ap
+         logger.error(f"Stream connection failed for camera {req.camera_id}: source_url={source_url_safe}")
+         raise HTTPException(status_code=502, detail="Unable to connect to camera stream")
+ 
++    if result == StreamStartResult.CONNECTION_FAILED_AUTH:
++        logger.error(f"Stream authentication failed for camera {req.camera_id}: source_url={source_url_safe}")
++        raise HTTPException(
++            status_code=502,
++            detail="Camera authentication failed. Verify RTSP username/password.",
++        )
++
++    if result == StreamStartResult.CONNECTION_FAILED_UNREACHABLE:
++        logger.error(f"Stream host unreachable for camera {req.camera_id}: source_url={source_url_safe}")
++        raise HTTPException(
++            status_code=502,
++            detail="Camera host unreachable. Check network connectivity and IP address.",
++        )
++
+     if result != StreamStartResult.SUCCESS:
+         raise HTTPException(status_code=500, detail=f"Failed to start stream for camera {req.camera_id}")
+ 
+@@ -163,7 +177,7 @@ async def stop_stream(req: StreamStopRequest, api_key: str = Depends(verify_api_
+ 
+     success = await stream_manager.stop_stream(req.camera_id)
+     if not success:
+-        raise HTTPException(status_code=404, detail=f"No active stream for camera {req.camera_id}")
++        return {"status": "already_stopped", "camera_id": req.camera_id}
+ 
+     return {"status": "stopped", "camera_id": req.camera_id}
+ 
+@@ -175,7 +189,7 @@ async def stream_status(camera_id: str, api_key: str = Depends(verify_api_key)):
+ 
+     status = stream_manager.get_stream_status(camera_id)
+     if status is None:
+-        raise HTTPException(status_code=404, detail=f"No stream for camera {camera_id}")
++        return {"camera_id": camera_id, "stream": {"status": "STOPPED", "fps": 0, "vehicles_detected": 0, "frame_count": 0, "dropped_frames": 0}}
+ 
+     return {"camera_id": camera_id, "stream": status}
+ 
+@@ -190,7 +204,7 @@ async def stream_frame(camera_id: str):
+     if frame is None:
+         raise HTTPException(status_code=404, detail="No frame available")
+ 
+-    ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
++    ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, settings.FRAME_QUALITY])
+     if not ret:
+         raise HTTPException(status_code=500, detail="Failed to encode frame")
+ 
+@@ -217,7 +231,7 @@ async def stream_mjpeg(camera_id: str):
+                 break
+             frame = await stream_manager.get_frame(camera_id)
+             if frame is not None:
+-                ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
++                ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, settings.MJPEG_QUALITY])
+                 if ret:
+                     yield (
+                         b'--frame\r\n'
+diff --git a/ai-engine/src/plate/plate_recognizer.py b/ai-engine/src/plate/plate_recognizer.py
+index ad1d688..a9c85cc 100644
+--- a/ai-engine/src/plate/plate_recognizer.py
++++ b/ai-engine/src/plate/plate_recognizer.py
+@@ -1,19 +1,31 @@
+ import logging
+ import re
+-from typing import List, Optional, Tuple
++from collections import Counter
++from typing import Dict, List, Optional, Tuple
+ 
+ import cv2
+ import numpy as np
+ 
+ from src.common.models import PlateResult, Track
++from src.detection.plate_detector import PlateDetector
+ 
+ logger = logging.getLogger(__name__)
+ 
+ 
++# Temporal OCR consensus: keep a rolling history per track
++OCR_CONSENSUS_HISTORY = 5
++
++
+ class PlateRecognizer:
+-    def __init__(self, ocr_confidence_threshold: float = 0.3):
++    def __init__(self, settings):
+         self.reader = None
+-        self.ocr_confidence_threshold = ocr_confidence_threshold
++        self.ocr_confidence_threshold = settings.PLATE_DETECTION_CONFIDENCE
++        self.plate_detector = PlateDetector(
++            model_path=settings.PLATE_MODEL_PATH,
++            conf_threshold=settings.PLATE_DETECTION_CONFIDENCE,
++        )
++        # Per-track OCR history for temporal consensus: {track_id: [(text, conf, ts), ...]}
++        self._track_ocr_history: Dict[int, List[Tuple[str, float, float]]] = {}
+         self._load_reader()
+ 
+     def _load_reader(self):
+@@ -26,6 +38,7 @@ class PlateRecognizer:
+             self.reader = None
+ 
+     def recognize(self, frame: np.ndarray, tracks: List[Track]) -> List[PlateResult]:
++        """Legacy batch method — processes all tracks every frame."""
+         if self.reader is None or not tracks:
+             return []
+ 
+@@ -33,14 +46,79 @@ class PlateRecognizer:
+         for track in tracks:
+             if track.lost or track.completed or not track.detections:
+                 continue
+-
+             det = track.detections[-1]
+             plate = self._detect_plate_in_roi(frame, det.bbox, track.track_id)
+             if plate is not None:
+                 results.append(plate)
+-
+         return results
+ 
++    def recognize_single(self, frame: np.ndarray, track: Track) -> List[PlateResult]:
++        """Per-track OCR with temporal consensus. Call per-track per-frame as scheduled."""
++        if self.reader is None or track.lost or track.completed or not track.detections:
++            return []
++
++        det = track.detections[-1]
++        plate = self._detect_plate_in_roi(frame, det.bbox, track.track_id)
++        if plate is None:
++            return []
++
++        # Update temporal history for this track
++        tid = track.track_id
++        if tid not in self._track_ocr_history:
++            self._track_ocr_history[tid] = []
++        history = self._track_ocr_history[tid]
++        history.append((plate.normalized_plate, plate.ocr_confidence, plate.quality_score or 0))
++        if len(history) > OCR_CONSENSUS_HISTORY:
++            history.pop(0)
++
++        # Temporal consensus: choose the text that appears most frequently
++        # among high-confidence results in the recent window
++        if len(history) >= 2:
++            texts = [h[0] for h in history if h[1] >= self.ocr_confidence_threshold]
++            if texts:
++                most_common = Counter(texts).most_common(1)[0]
++                consensus_text = most_common[0]
++                consensus_count = most_common[1]
++                if consensus_count >= max(2, len(history) // 2):
++                    best_match = max(
++                        (h for h in history if h[0] == consensus_text),
++                        key=lambda x: x[1],
++                        default=None,
++                    )
++                    if best_match is not None:
++                        normalized, country, country_conf = self._normalize_plate(consensus_text)
++                        return [PlateResult(
++                            plate_text=consensus_text,
++                            normalized_plate=normalized if normalized != plate.normalized_plate else consensus_text,
++                            country=country,
++                            country_confidence=country_conf,
++                            ocr_confidence=round(best_match[1], 4),
++                            quality_score=round(best_match[2], 4),
++                            track_id=tid,
++                            bbox=plate.bbox,
++                            alternatives=plate.alternatives,
++                            detector_version=self.plate_detector.model_version,
++                            ocr_model_version="1.0",
++                            plate_detector_version=self.plate_detector.model_version,
++                        )]
++
++        return [plate]
++
++    def _locate_plate_roi(self, frame: np.ndarray, vehicle_bbox: List[float]) -> Tuple[Optional[np.ndarray], Optional[List[float]]]:
++        """Use dedicated plate detector to locate plate within vehicle bbox.
++        Returns (plate_roi, plate_bbox) or (None, None) if no plate detected."""
++        plate_dets = self.plate_detector.detect(frame, roi_bbox=vehicle_bbox)
++        if plate_dets:
++            best = max(plate_dets, key=lambda p: p.confidence)
++            h, w = frame.shape[:2]
++            x1 = max(0, int(best.bbox[0]))
++            y1 = max(0, int(best.bbox[1]))
++            x2 = min(w, int(best.bbox[2]))
++            y2 = min(h, int(best.bbox[3]))
++            if x2 > x1 and y2 > y1:
++                return frame[y1:y2, x1:x2], best.bbox
++        return None, None
++
+     def _detect_plate_in_roi(self, frame: np.ndarray, bbox: List[float],
+                              track_id: int) -> Optional[PlateResult]:
+         h, w = frame.shape[:2]
+@@ -52,22 +130,33 @@ class PlateRecognizer:
+         if x2 <= x1 or y2 <= y1:
+             return None
+ 
+-        # Focus on the bottom portion of the bounding box (where plates typically are)
+-        plate_roi_y1 = y1 + int((y2 - y1) * 0.55)
+-        plate_roi = frame[plate_roi_y1:y2, x1:x2]
++        # Try dedicated plate detector first
++        plate_roi, plate_bbox = self._locate_plate_roi(frame, bbox)
++        plate_bbox_offset = plate_bbox
++
++        if plate_roi is None:
++            # Dedicated plate detector failed — return None instead of
++            # running unreliable bottom-crop OCR that generates false text
++            return None
+ 
+         if plate_roi.size == 0:
+             return None
+ 
+         # Preprocess: resize if too small, convert to grayscale, enhance contrast
+-        if plate_roi.shape[0] < 20 or plate_roi.shape[1] < 40:
+-            scale = max(2.0, 40.0 / plate_roi.shape[1])
+-            plate_roi = cv2.resize(plate_roi, None, fx=scale, fy=scale)
++        orig_h_r, orig_w_r = plate_roi.shape[:2]
++        if orig_h_r < 24 or orig_w_r < 48:
++            scale = max(2.5, 48.0 / max(orig_w_r, 1), 24.0 / max(orig_h_r, 1))
++            plate_roi = cv2.resize(plate_roi, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
+ 
+         gray = cv2.cvtColor(plate_roi, cv2.COLOR_RGB2GRAY)
+-        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
++
++        clahe = cv2.createCLAHE(clipLimit=1.5, tileGridSize=(8, 8))
+         enhanced = clahe.apply(gray)
+ 
++        if enhanced.shape[0] > 30 and enhanced.shape[1] > 60:
++            blurred = cv2.GaussianBlur(enhanced, (0, 0), 1.0)
++            enhanced = cv2.addWeighted(enhanced, 1.5, blurred, -0.5, 0)
++
+         try:
+             ocr_results = self.reader.readtext(enhanced, paragraph=False)
+         except Exception as e:
+@@ -90,10 +179,10 @@ class PlateRecognizer:
+                 best_text = cleaned
+                 best_confidence = conf
+                 if corners:
+-                    best_bbox = [float(corners[0][0]) + x1,
+-                                 float(corners[0][1]) + plate_roi_y1,
+-                                 float(corners[2][0]) + x1,
+-                                 float(corners[2][1]) + plate_roi_y1]
++                    best_bbox = [float(corners[0][0]) + plate_bbox_offset[0],
++                                 float(corners[0][1]) + plate_bbox_offset[1],
++                                 float(corners[2][0]) + plate_bbox_offset[0],
++                                 float(corners[2][1]) + plate_bbox_offset[1]]
+ 
+         if best_text is None:
+             return None
+@@ -107,17 +196,25 @@ class PlateRecognizer:
+             ocr_confidence=round(best_confidence, 4),
+             quality_score=round(best_confidence, 4),
+             track_id=track_id,
+-            bbox=best_bbox or [x1, plate_roi_y1, x2, y2],
++            bbox=best_bbox or plate_bbox_offset,
+             alternatives=alternatives,
+-            detector_version="easyocr",
++            detector_version=self.plate_detector.model_version,
+             ocr_model_version="1.0",
++            plate_detector_version=self.plate_detector.model_version,
+         )
+ 
++    def cleanup_track_history(self, active_track_ids: set):
++        stale = [tid for tid in self._track_ocr_history if tid not in active_track_ids]
++        for tid in stale:
++            del self._track_ocr_history[tid]
++        if stale:
++            logger.debug(f"Cleaned OCR history for {len(stale)} expired tracks")
++
+     def _normalize_plate(self, text: str) -> Tuple[str, str, float]:
+         # Nepal format: XX XX XXXX (e.g., "BA 1 2345" or "BA 12 3456")
+         nepal_patterns = [
+-            r'^[A-Z]{2}\d{1,2}\d{4}$',    # BA12345 -> BA 1 2345
+-            r'^[A-Z]{2}\d{2}\d{4}$',      # BA1212345 -> BA 12 12345
++            r'^[A-Z]{2}\d{1,2}\d{4}$',
++            r'^[A-Z]{2}\d{2}\d{4}$',
+         ]
+         for pattern in nepal_patterns:
+             if re.match(pattern, text):
+diff --git a/ai-engine/src/speed/speed_estimator.py b/ai-engine/src/speed/speed_estimator.py
+index 4d7d0d2..a3a2909 100644
+--- a/ai-engine/src/speed/speed_estimator.py
++++ b/ai-engine/src/speed/speed_estimator.py
+@@ -38,6 +38,20 @@ class SpeedEstimator:
+     def has_calibration(self) -> bool:
+         return self.pixels_per_meter is not None and self.pixels_per_meter > 0
+ 
++    def diagnostic_status(self) -> str:
++        if not self.has_calibration():
++            return "SPEED_UNAVAILABLE_NO_CALIBRATION"
++        return "SPEED_AVAILABLE"
++
++    def diagnostic_track_status(self, track: Track) -> str:
++        if not self.has_calibration():
++            return "SPEED_UNAVAILABLE_NO_CALIBRATION"
++        if track.lost or track.completed:
++            return "SPEED_UNAVAILABLE_TRACK_LOST"
++        if len(track.trajectory) < MIN_TRAJECTORY_POINTS:
++            return f"SPEED_UNAVAILABLE_INSUFFICIENT_HISTORY ({len(track.trajectory)}/<{MIN_TRAJECTORY_POINTS})"
++        return "SPEED_AVAILABLE"
++
+     def cleanup(self, active_track_ids: set):
+         stale = [tid for tid in self._prev_speeds if tid not in active_track_ids]
+         for tid in stale:
+@@ -72,6 +86,19 @@ class SpeedEstimator:
+         if len(recent) < 2:
+             return None
+ 
++        # Use actual timestamps if available (trajectory point = [cx, cy, timestamp])
++        # Fall back to frame_interval heuristic if timestamps are identical or missing
++        pt = recent[0]
++        last_pt = recent[-1]
++        has_timestamps = len(pt) >= 3 and len(last_pt) >= 3 and last_pt[2] > pt[2]
++        if has_timestamps:
++            duration_s = last_pt[2] - pt[2]
++        else:
++            duration_s = len(recent) * frame_interval
++
++        if duration_s <= 0:
++            return None
++
+         total_pixels = 0.0
+         for i in range(1, len(recent)):
+             dx = recent[i][0] - recent[i - 1][0]
+@@ -79,9 +106,8 @@ class SpeedEstimator:
+             total_pixels += (dx ** 2 + dy ** 2) ** 0.5
+ 
+         distance_m = total_pixels / ppm if ppm > 0 else 0.0
+-        duration_s = len(recent) * frame_interval
+ 
+-        if duration_s <= 0 or distance_m <= 0:
++        if distance_m <= 0:
+             return None
+ 
+         speed_mps = distance_m / duration_s
+diff --git a/ai-engine/src/stream/stream_manager.py b/ai-engine/src/stream/stream_manager.py
+index f456101..af92671 100644
+--- a/ai-engine/src/stream/stream_manager.py
++++ b/ai-engine/src/stream/stream_manager.py
+@@ -1,8 +1,10 @@
+ import asyncio
+ import logging
++import socket
+ from datetime import datetime, timezone
+ from enum import Enum
+ from typing import Dict, Optional
++from urllib.parse import urlparse
+ 
+ import cv2
+ import numpy as np
+@@ -19,9 +21,60 @@ class StreamStartResult(Enum):
+     SUCCESS = "success"
+     STREAM_ALREADY_EXISTS = "stream_already_exists"
+     CONNECTION_FAILED = "connection_failed"
++    CONNECTION_FAILED_AUTH = "connection_failed_auth"
++    CONNECTION_FAILED_UNREACHABLE = "connection_failed_unreachable"
+     ERROR = "error"
+ 
+ 
++def _diagnose_rtsp_error(source_url: str) -> str:
++    """Classify RTSP connection failure reason without exposing credentials."""
++    try:
++        parsed = urlparse(source_url)
++        hostname = parsed.hostname
++        if not hostname:
++            return "INVALID_SOURCE_URL"
++
++        port = parsed.port or 554
++
++        # Test TCP connectivity
++        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
++        sock.settimeout(5.0)
++        try:
++            result = sock.connect_ex((hostname, port))
++        finally:
++            sock.close()
++
++        if result != 0:
++            return "CONNECTION_REFUSED"
++
++        # Socket connects — TCP is fine. Likely auth or stream path issue.
++        if parsed.username and parsed.password:
++            return "AUTHENTICATION_FAILED"
++
++        return "STREAM_NOT_FOUND"
++    except Exception:
++        return "UNKNOWN_CONNECTION_ERROR"
++
++
++def _sanitize_url(url: str) -> str:
++    """Strip password from RTSP URL for safe logging."""
++    if not url:
++        return url
++    try:
++        at_idx = url.find('@')
++        if at_idx > 0:
++            scheme_end = url.find('://')
++            if scheme_end >= 0:
++                userinfo_end = scheme_end + 3
++                colon_idx = url.find(':', userinfo_end)
++                if 0 < colon_idx < at_idx:
++                    safe = url[:colon_idx + 1] + '****' + url[at_idx:]
++                    return safe
++    except Exception:
++        pass
++    return url
++
++
+ class StreamManager:
+     def __init__(self, settings: Settings):
+         self.settings = settings
+@@ -56,7 +109,12 @@ class StreamManager:
+         test_cap = cv2.VideoCapture(source_url)
+         if not test_cap.isOpened():
+             test_cap.release()
+-            logger.error(f"Failed to open video source for camera {camera_id}: {source_url}")
++            logger.error(f"Failed to open video source for camera {camera_id}: source_url={_sanitize_url(source_url)}")
++            error_type = _diagnose_rtsp_error(source_url)
++            if error_type == "AUTHENTICATION_FAILED":
++                return StreamStartResult.CONNECTION_FAILED_AUTH
++            elif error_type == "CONNECTION_REFUSED":
++                return StreamStartResult.CONNECTION_FAILED_UNREACHABLE
+             return StreamStartResult.CONNECTION_FAILED
+         test_cap.release()
+ 
+@@ -71,7 +129,7 @@ class StreamManager:
+         task = asyncio.create_task(processor.run())
+         self._tasks[camera_id] = task
+ 
+-        logger.info(f"Stream started for camera {camera_id}")
++        logger.info(f"Stream started for camera {camera_id}: source_url={_sanitize_url(source_url)}")
+         return StreamStartResult.SUCCESS
+ 
+     async def stop_stream(self, camera_id: str) -> bool:
+diff --git a/ai-engine/src/stream/video_processor.py b/ai-engine/src/stream/video_processor.py
+index 1b3ca21..54c0ae6 100644
+--- a/ai-engine/src/stream/video_processor.py
++++ b/ai-engine/src/stream/video_processor.py
+@@ -4,13 +4,14 @@ import cv2
+ import logging
+ import time
+ import numpy as np
+-from datetime import datetime
+-from typing import Optional, List
++from datetime import datetime, timezone
++from typing import Dict, Optional, List
+ 
+ from src.config import Settings
+ from src.common.event_publisher import EventPublisher
+-from src.common.models import Detection, Track, PlateResult, SpeedMeasurement, ViolationCandidate
++from src.common.models import Detection, Track, PlateResult, SpeedMeasurement, ViolationCandidate, HelmetResult
+ from src.detection.vehicle_detector import VehicleDetector
++from src.detection.helmet_detector import HelmetDetector
+ from src.tracking.tracker import VehicleTracker
+ from src.speed.speed_estimator import SpeedEstimator
+ from src.plate.plate_recognizer import PlateRecognizer
+@@ -54,6 +55,8 @@ class VideoProcessor:
+ 
+         self.latest_frame: Optional[np.ndarray] = None
+         self.latest_frame_lock = asyncio.Lock()
++        # Store one raw (non-annotated) frame for evidence capture
++        self.latest_raw_frame: Optional[np.ndarray] = None
+ 
+         self.vehicle_detector = VehicleDetector(settings)
+         self._mark_timing("DETECTOR_INITIALIZED")
+@@ -64,22 +67,32 @@ class VideoProcessor:
+             min_hits=settings.TRACK_MIN_HITS,
+         )
+         self.speed_estimator = SpeedEstimator()
+-        self.plate_recognizer = PlateRecognizer()
++        self.plate_recognizer = PlateRecognizer(settings)
++        self.helmet_detector = HelmetDetector(
++            model_path=settings.HELMET_MODEL_PATH,
++            conf_threshold=settings.HELMET_DETECTION_CONFIDENCE,
++        ) if settings.HELMET_DETECTION_ENABLED else None
+         self.violation_detector = ViolationDetector(
+             detector_version=f"yolov8-{self.vehicle_detector.model_version}",
++            helmet_temporal_window=settings.HELMET_TEMPORAL_WINDOW,
+         )
+         self._mark_timing("ALL_COMPONENTS_INITIALIZED")
+ 
+         self._track_speeds: dict[int, float] = {}
+         self._track_plates: dict[int, str] = {}
++        self._track_plate_conf: dict[int, float] = {}
++        self._track_ocr_counters: dict[int, int] = {}
+         self._published_tracks: set[int] = set()
+         self._published_plates: set[int] = set()
+         self._track_publish_counter: dict[int, int] = {}
+         self._speed_publish_counter: dict[int, int] = {}
++        self._track_detection_counter: dict[int, int] = {}
+         self._frame_counter = 0
+         self._violation_publish_counter: dict[str, int] = {}
++        self._helmet_results_cache: Dict[int, List[HelmetResult]] = {}
+         self._last_cleanup_time = time.time()
+         self._inference_latency_ms: float = 0.0
++        self._detection_enabled_frame_count = 0  # counts frames where detection is attempted
+ 
+     def _mark_timing(self, label: str):
+         self._timing[label] = time.time()
+@@ -111,7 +124,7 @@ class VideoProcessor:
+ 
+     async def run(self):
+         self.running = True
+-        self.started_at = datetime.utcnow()
++        self.started_at = datetime.now(timezone.utc)
+         self._mark_timing("RUN_CALLED")
+ 
+         cap = cv2.VideoCapture(self.source_url)
+@@ -125,11 +138,18 @@ class VideoProcessor:
+         cap.set(cv2.CAP_PROP_BUFFERSIZE, CAP_PROP_BUFFER_SIZE)
+         self._mark_timing("RTSP_CONNECTION_ESTABLISHED")
+ 
++        # Log the actual capture resolution
++        actual_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
++        actual_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
++        actual_fps = cap.get(cv2.CAP_PROP_FPS)
++        logger.info(f"Camera {self.camera_id}: capture res={actual_w}x{actual_h} FPS={actual_fps:.1f}")
++
+         frame_interval = 1.0 / self.target_fps
+         last_frame_time = 0
+         last_health_publish = 0
+         reconnect_attempt = 0
+         reconnect_delay = RECONNECT_BASE_DELAY
++        prev_frame_time = time.time()
+ 
+         while self.running:
+             if cap is None:
+@@ -168,30 +188,48 @@ class VideoProcessor:
+             self.frame_count += 1
+             self._frame_counter += 1
+             now = time.time()
++            dt_actual = now - prev_frame_time
++            prev_frame_time = now
+ 
+             if self.frame_count == 1:
+                 self._mark_timing("FIRST_FRAME_CAPTURED")
+ 
++            # Throttle to target FPS
+             if now - last_frame_time < frame_interval:
+                 continue
+-
+             last_frame_time = now
+ 
+-            if self.settings.FRAME_WIDTH and self.settings.FRAME_HEIGHT:
+-                frame = cv2.resize(frame, (self.settings.FRAME_WIDTH, self.settings.FRAME_HEIGHT))
++            # Only resize if configured to a non-zero size; otherwise keep original
++            if self.settings.FRAME_WIDTH > 0 and self.settings.FRAME_HEIGHT > 0:
++                process_frame = cv2.resize(frame, (self.settings.FRAME_WIDTH, self.settings.FRAME_HEIGHT))
++            else:
++                process_frame = frame.copy() if frame is not None else frame
+ 
+-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
++            # Store a raw (non-annotated) copy for evidence
++            raw_for_evidence = process_frame.copy()
++
++            frame_rgb = cv2.cvtColor(process_frame, cv2.COLOR_BGR2RGB)
+ 
+             publish_interval = max(1, int(self.target_fps / 2))
+             should_publish = (self._frame_counter % publish_interval == 0)
+ 
+             inference_start = time.time()
+             try:
+-                detections = self.vehicle_detector.detect(frame_rgb)
+-                if self.frame_count == 1:
+-                    self._mark_timing("FIRST_DETECTION_COMPLETED")
++                # Frame-skipped detection: run YOLO every DETECTION_FRAME_SKIP frames
++                detections = []
++                detect_this_frame = (self._frame_counter % self.settings.DETECTION_FRAME_SKIP == 1)
++                if detect_this_frame:
++                    detections = self.vehicle_detector.detect(frame_rgb)
++                    self._detection_enabled_frame_count += 1
++                    if self.frame_count == 1:
++                        self._mark_timing("FIRST_DETECTION_COMPLETED")
++                else:
++                    # On non-detection frames, still provide previous detections
++                    # for the tracker to use (tracker will match to existing tracks)
++                    pass
+ 
+-                tracks = self.tracker.update(detections, frame_rgb)
++                # Update tracker with current detections (or empty on skip frames)
++                tracks = self.tracker.update(detections, frame_rgb, dt=dt_actual)
+                 confirmed = self.tracker.get_confirmed_tracks()
+ 
+                 if self.frame_count == 1:
+@@ -200,15 +238,45 @@ class VideoProcessor:
+                 speed_results = self.speed_estimator.estimate(
+                     confirmed, frame_interval
+                 ) if self.settings.SPEED_ESTIMATION_ENABLED else []
+-                plate_results = self.plate_recognizer.recognize(
+-                    frame_rgb, confirmed
+-                ) if self.settings.PLATE_RECOGNITION_ENABLED else []
++
++                # Per-track OCR scheduling: only OCR tracks that haven't been
++                # processed recently
++                plate_results = []
++                if self.settings.PLATE_RECOGNITION_ENABLED and confirmed:
++                    for trk in confirmed:
++                        tid = trk.track_id
++                        self._track_ocr_counters[tid] = self._track_ocr_counters.get(tid, 0) + 1
++                        ocr_interval = self.settings.OCR_TRACK_INTERVAL
++                        if tid not in self._track_plates or self._track_ocr_counters[tid] >= ocr_interval:
++                            if tid in self._track_plates:
++                                self._track_ocr_counters[tid] = 0
++                            track_plates = self.plate_recognizer.recognize_single(frame_rgb, trk)
++                            if track_plates:
++                                plate_results.extend(track_plates)
++
++                # Helmet detection on motorcycle/scooter tracks
++                helmet_results: Dict[int, List[HelmetResult]] = {}
++                if self.helmet_detector is not None and self.settings.HELMET_DETECTION_ENABLED:
++                    rider_tracks = [
++                        (t.track_id, t.detections[-1].bbox if t.detections else None,
++                         t.category.value if t.category else "")
++                        for t in confirmed
++                        if t.detections
++                    ]
++                    rider_tracks_filtered = [
++                        (tid, bbox, cat) for tid, bbox, cat in rider_tracks
++                        if bbox is not None
++                    ]
++                    if rider_tracks_filtered:
++                        helmet_results = self.helmet_detector.detect_riders(frame_rgb, rider_tracks_filtered)
++                    self._helmet_results_cache = helmet_results
+ 
+                 violations = self.violation_detector.detect(
+-                    confirmed, speed_results, plate_results, camera_id=self.camera_id
++                    confirmed, speed_results, plate_results, camera_id=self.camera_id,
++                    helmet_results=helmet_results if helmet_results else None,
+                 ) if self.settings.VIOLATION_DETECTION_ENABLED else []
+ 
+-                await self._publish_detections(tracks, should_publish)
++                await self._publish_detections(confirmed, should_publish)
+                 await self._publish_plates(plate_results, should_publish)
+                 await self._publish_speeds(speed_results, should_publish)
+                 await self._publish_violations(violations)
+@@ -221,10 +289,12 @@ class VideoProcessor:
+                 for p in plate_results:
+                     if p.track_id is not None:
+                         self._track_plates[p.track_id] = p.normalized_plate
++                        self._track_plate_conf[p.track_id] = p.ocr_confidence
+ 
+-                annotated = self._draw_annotations(frame, tracks, detections, plate_results, speed_results, violations)
++                annotated = self._draw_annotations(process_frame, tracks, detections, plate_results, speed_results, violations)
+                 async with self.latest_frame_lock:
+                     self.latest_frame = annotated
++                    self.latest_raw_frame = raw_for_evidence
+ 
+                 if not self.frame_ready:
+                     self.frame_ready = True
+@@ -275,9 +345,15 @@ class VideoProcessor:
+                           speed_results: List[SpeedMeasurement],
+                           violations: List[ViolationCandidate]) -> np.ndarray:
+         annotated = frame.copy()
++        h, w = annotated.shape[:2]
++        font = cv2.FONT_HERSHEY_SIMPLEX
+ 
+         confirmed_tracks = [t for t in tracks if t.confirmed]
+ 
++        # Base font settings adaptive to frame width
++        font_scale = max(0.45, min(0.7, w / 1500))
++        thickness = max(1, int(w / 700))
++
+         for i, track in enumerate(confirmed_tracks):
+             if not track.detections:
+                 continue
+@@ -286,32 +362,75 @@ class VideoProcessor:
+             color = COLORS[track.track_id % len(COLORS)]
+ 
+             x1, y1, x2, y2 = map(int, bbox)
+-            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, 2)
++            cv2.rectangle(annotated, (x1, y1), (x2, y2), color, max(1, int(w / 600)))
++
++            # Build overlay: show only what we actually know
++            label_parts = [f"ID {track.track_id}"]
+ 
+-            label = f"#{track.track_id} {track.category.value} {det.confidence:.0%}"
+             speed = self._track_speeds.get(track.track_id)
+-            if speed is not None:
+-                label += f" | {speed:.0f} km/h"
++            if speed is not None and speed > 0:
++                label_parts.append(f"{speed:.0f} km/h")
++
+             plate = self._track_plates.get(track.track_id)
+             if plate:
+-                label += f" | {plate}"
++                label_parts.append(plate)
++
++            # Helmet status for rider vehicles
++            helmet_info = self._helmet_results_cache.get(track.track_id)
++            if helmet_info:
++                has_helmet = any(r.has_helmet for r in helmet_info)
++                if has_helmet:
++                    label_parts.append("HELMET")
++                else:
++                    label_parts.append("NO HELMET")
++                    color = (0, 0, 255)
++
++            # Check if this track is in a violation for this frame
++            violating = any(v.track_id == track.track_id for v in violations)
++            if violating:
++                label_parts.append("VIOLATION")
++                color = (0, 0, 255)  # Red for violation tracks
++
++            label = " | ".join(label_parts)
+ 
+-            cv2.putText(annotated, label, (x1, y1 - 10),
+-                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
++            # Draw label background with padding
++            (tw, th), _ = cv2.getTextSize(label, font, font_scale, thickness)
++            lx, ly = x1, max(y1 - 10, 5)
++            cv2.rectangle(annotated, (lx, ly - th - 4), (lx + tw + 6, ly + 4), (0, 0, 0), -1)
++            cv2.putText(annotated, label, (lx + 3, ly - 2), font, font_scale, color, thickness)
+ 
++        # Violation banner at top of frame
+         for violation in violations:
+             cv2.putText(annotated, f"VIOLATION: {violation.violation_type.value}",
+-                        (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
++                        (10, 60), font, 0.7, (0, 0, 255), 2)
+ 
+             if violation.track_id:
+                 for track in tracks:
+                     if track.track_id == violation.track_id and track.detections:
+                         bbox = track.detections[-1].bbox
+                         x1, y1, x2, y2 = map(int, bbox)
+-                        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 4)
++                        cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), max(2, int(w / 400)))
++
++        # Top status bar
++        status_lines = []
++        status_lines.append(f"FPS: {self.current_fps:.1f} | Tracks: {len(confirmed_tracks)}")
++
++        speed_status = self.speed_estimator.diagnostic_status()
++        if speed_status == "SPEED_AVAILABLE":
++            status_lines.append("Speed: Calibrated")
++        else:
++            status_lines.append("Speed: Not Calibrated")
++
++        if self.settings.ENABLE_DIAGNOSTIC_MODE:
++            status_lines.append(f"Det: {self._detection_enabled_frame_count}/{self.frame_count}")
++            status_lines.append(f"Lat: {self._inference_latency_ms:.0f}ms")
++            status_lines.append(f"Dropped: {self.dropped_frames}")
++            status_lines.append(f"Res: {w}x{h}")
++
++        status_text = " | ".join(status_lines)
+ 
+-        cv2.putText(annotated, f"Camera: {self.camera_id[:8]}... FPS: {self.current_fps:.1f}",
+-                    (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
++        status_color = (0, 255, 0) if speed_status == "SPEED_AVAILABLE" else (255, 255, 255)
++        cv2.putText(annotated, status_text, (10, 30), font, 0.45, status_color, 1)
+ 
+         return annotated
+ 
+@@ -419,15 +538,18 @@ class VideoProcessor:
+             if self._violation_publish_counter[dedup_key] > 1 and self._frame_counter % 30 != 0:
+                 continue
+             payload = violation.model_dump()
++            # Capture evidence from raw (non-annotated) frame for clean evidence storage
+             async with self.latest_frame_lock:
+-                if self.latest_frame is not None:
+-                    _, buf = cv2.imencode(".jpg", self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
++                evidence_source = self.latest_raw_frame if self.latest_raw_frame is not None else self.latest_frame
++                if evidence_source is not None:
++                    quality = self.settings.EVIDENCE_QUALITY
++                    _, buf = cv2.imencode(".jpg", evidence_source, [cv2.IMWRITE_JPEG_QUALITY, quality])
+                     payload["evidence_frames"] = [base64.b64encode(buf).decode("utf-8")]
+             await self.event_publisher.publish(
+                 topic=self.settings.KAFKA_VIOLATION_CANDIDATES_TOPIC,
+                 payload=payload,
+                 camera_id=self.camera_id,
+-                correlation_id=f"violation-{violation.violation_type.value}-{violation.track_id}-{datetime.utcnow().timestamp()}",
++                correlation_id=f"violation-{violation.violation_type.value}-{violation.track_id}-{datetime.now(timezone.utc).timestamp()}",
+             )
+ 
+     def _cleanup_publish_state(self):
+@@ -438,14 +560,24 @@ class VideoProcessor:
+             self._published_plates.discard(tid)
+             self._track_speeds.pop(tid, None)
+             self._track_plates.pop(tid, None)
++            self._track_plate_conf.pop(tid, None)
++            self._track_ocr_counters.pop(tid, None)
+             self._track_publish_counter.pop(tid, None)
+             self._speed_publish_counter.pop(tid, None)
++            self._track_detection_counter.pop(tid, None)
+         stale_violations = [k for k in self._violation_publish_counter
+                             if not any(t.track_id == int(k.split(":")[-1]) for t in self.tracker.get_confirmed_tracks()
+                                        if k.split(":")[-1].isdigit())]
+         for k in stale_violations:
+             self._violation_publish_counter.pop(k, None)
+         self.speed_estimator.cleanup(active_track_ids)
++        self.violation_detector.cleanup_helmet_state(self.camera_id, active_track_ids)
++        # Clean up cached helmet results
++        stale_helmets = [tid for tid in self._helmet_results_cache if tid not in active_track_ids]
++        for tid in stale_helmets:
++            self._helmet_results_cache.pop(tid, None)
++        # Clean up PlateRecognizer OCR history for expired tracks
++        self.plate_recognizer.cleanup_track_history(active_track_ids)
+         if stale_tids or stale_violations:
+             logger.debug(f"Cleaned up publish state for camera {self.camera_id}: "
+                          f"{len(stale_tids)} tracks, {len(stale_violations)} violations")
+diff --git a/ai-engine/src/tracking/tracker.py b/ai-engine/src/tracking/tracker.py
+index 9d049bc..b8ff142 100644
+--- a/ai-engine/src/tracking/tracker.py
++++ b/ai-engine/src/tracking/tracker.py
+@@ -48,9 +48,10 @@ class TrackState:
+         self.kf_w = KalmanFilter1D(0.0)
+         self.kf_h = KalmanFilter1D(0.0)
+         self.detections: List[Detection] = []
+-        self.trajectory: List[Tuple[float, float]] = [(cx, cy)]
+-        self.first_seen: float = time.time()
+-        self.last_seen: float = time.time()
++        now = time.time()
++        self.trajectory: List[Tuple[float, float, float]] = [(cx, cy, now)]
++        self.first_seen: float = now
++        self.last_seen: float = now
+         self.lost: bool = False
+         self.completed: bool = False
+         self.confirmed: bool = False
+@@ -96,7 +97,7 @@ class TrackState:
+         self.detections.append(det)
+         if len(self.detections) > self.MAX_HISTORY:
+             self.detections = self.detections[-self.MAX_HISTORY:]
+-        self.trajectory.append((cx, cy))
++        self.trajectory.append((cx, cy, now))
+         if len(self.trajectory) > self.MAX_HISTORY:
+             self.trajectory = self.trajectory[-self.MAX_HISTORY:]
+         self.last_seen = now
+@@ -150,14 +151,15 @@ class VehicleTracker:
+     def _is_traffic_detection(self, det: Detection) -> bool:
+         return det.mapped_category is not None and det.mapped_category in TRAFFIC_CATEGORIES
+ 
+-    def update(self, detections: List[Detection], frame=None) -> List[Track]:
++    def update(self, detections: List[Detection], frame=None, dt: float = 0.033) -> List[Track]:
+         now = time.time()
+         matched_ids = set()
+ 
+-        # Predict all track positions
++        # Predict all track positions using actual time delta
++        predict_dt = max(0.01, min(1.0, dt))
+         for state in self._states.values():
+             if not state.lost and not state.completed:
+-                state.predict(0.033)
++                state.predict(predict_dt)
+ 
+         for det in detections:
+             if not self._is_traffic_detection(det):
+@@ -260,7 +262,7 @@ class VehicleTracker:
+     def _to_track(self, state: TrackState) -> Track:
+         dets = state.detections
+         conf = dets[-1].confidence if dets else 0.0
+-        traj_list = [[p[0], p[1]] for p in state.trajectory]
++        traj_list = [[p[0], p[1], p[2]] for p in state.trajectory]
+         return Track(
+             track_id=state.track_id,
+             detections=dets,
+diff --git a/ai-engine/src/violation/violation_detector.py b/ai-engine/src/violation/violation_detector.py
+index 389d03f..f7990d2 100644
+--- a/ai-engine/src/violation/violation_detector.py
++++ b/ai-engine/src/violation/violation_detector.py
+@@ -1,10 +1,12 @@
+ import logging
+ import time
++from collections import defaultdict
+ from datetime import datetime, timezone
+ from typing import Dict, List, Optional, Tuple
+ 
+ from src.common.models import (
+     Track, SpeedMeasurement, PlateResult, ViolationCandidate, ViolationType,
++    HelmetResult,
+ )
+ 
+ logger = logging.getLogger(__name__)
+@@ -25,11 +27,18 @@ class CameraViolationConfig:
+ 
+ 
+ class ViolationDetector:
+-    def __init__(self, detector_version: str = "1.0"):
++    def __init__(self, detector_version: str = "1.0",
++                 helmet_temporal_window: int = 5):
+         self.detector_version = detector_version
++        self.helmet_temporal_window = helmet_temporal_window
+         self.camera_configs: Dict[str, CameraViolationConfig] = {}
+         self._reported_violations: Dict[str, float] = {}
+         self._dedup_ttl = 60.0
++        # Track no-helmet state across frames: {(camera_id, track_id): [has_helmet, ...]}
++        # Keyed by (camera_id, track_id) tuple to prevent cross-camera collisions
++        self._helmet_history: Dict[Tuple[str, int], List[bool]] = defaultdict(list)
++        # Set of (camera_id, track_id) tuples that already reported NO_HELMET
++        self._helmet_reported: set[Tuple[str, int]] = set()
+ 
+     def configure_camera(self, camera_id: str, config: CameraViolationConfig):
+         self.camera_configs[camera_id] = config
+@@ -42,7 +51,8 @@ class ViolationDetector:
+     def detect(self, tracks: List[Track],
+                speed_measurements: List[SpeedMeasurement],
+                plate_results: List[PlateResult],
+-               camera_id: str = "unknown") -> List[ViolationCandidate]:
++               camera_id: str = "unknown",
++               helmet_results: Optional[Dict[int, List[HelmetResult]]] = None) -> List[ViolationCandidate]:
+         config = self.get_config(camera_id)
+         violations: List[ViolationCandidate] = []
+ 
+@@ -63,6 +73,11 @@ class ViolationDetector:
+             violations.extend(self._detect_wrong_way(
+                 tracks, camera_id, config, plate_by_track, track_by_id))
+ 
++        # Helmet detection: always check if we have helmet results
++        if helmet_results:
++            violations.extend(self._detect_no_helmet(
++                helmet_results, camera_id, plate_by_track, track_by_id))
++
+         return violations
+ 
+     def _is_duplicate(self, dedup_key: str) -> bool:
+@@ -79,6 +94,68 @@ class ViolationDetector:
+             }
+         return False
+ 
++    def _detect_no_helmet(self, helmet_results: Dict[int, List[HelmetResult]],
++                          camera_id: str,
++                          plate_by_track: Dict[int, PlateResult],
++                          track_by_id: Dict[int, Track]) -> List[ViolationCandidate]:
++        violations = []
++        now = time.time()
++        cam_track_key = None
++
++        for track_id, results in helmet_results.items():
++            cam_track_key = (camera_id, track_id)
++
++            # Determine if this track has any Without Helmet detection
++            any_without = any(not r.has_helmet for r in results)
++            any_with = any(r.has_helmet for r in results)
++
++            # If model returned no detections at all for this track, skip
++            if not results:
++                continue
++
++            # Update temporal history
++            self._helmet_history[cam_track_key].append(not any_without)
++            if len(self._helmet_history[cam_track_key]) > self.helmet_temporal_window:
++                self._helmet_history[cam_track_key].pop(0)
++
++            # Temporal confirmation: check if last N frames show no helmet
++            history = self._helmet_history[cam_track_key]
++            if len(history) < self.helmet_temporal_window:
++                continue
++
++            no_helmet_count = sum(1 for h in history if not h)
++            # Confirm no-helmet if >60% of window shows without helmet
++            if no_helmet_count < max(2, self.helmet_temporal_window * 0.6):
++                continue
++
++            # Skip if we already reported for this track+camera
++            if cam_track_key in self._helmet_reported:
++                continue
++
++            dedup_key = f"{camera_id}:{track_id}:NO_HELMET"
++            if self._is_duplicate(dedup_key):
++                continue
++
++            self._helmet_reported.add(cam_track_key)
++            pr = plate_by_track.get(track_id)
++            tr = track_by_id.get(track_id)
++
++            confidence = min(1.0, no_helmet_count / self.helmet_temporal_window)
++            violations.append(ViolationCandidate(
++                camera_id=camera_id,
++                timestamp=datetime.now(timezone.utc),
++                violation_type=ViolationType.NO_HELMET,
++                confidence=confidence,
++                track_id=track_id,
++                vehicle_category=(tr.category if tr else None),
++                plate_text=(pr.plate_text if pr else None),
++                normalized_plate=(pr.normalized_plate if pr else None),
++                plate_country=(pr.country if pr else None),
++                detector_version=self.detector_version,
++            ))
++
++        return violations
++
+     def _detect_overspeeding(self, speed_measurements: List[SpeedMeasurement],
+                              camera_id: str, config: CameraViolationConfig,
+                              plate_by_track: Dict[int, PlateResult],
+@@ -164,3 +241,12 @@ class ViolationDetector:
+             ))
+ 
+         return violations
++
++    def cleanup_helmet_state(self, camera_id: str, active_track_ids: set):
++        stale = [
++            key for key in self._helmet_history
++            if key[0] == camera_id and key[1] not in active_track_ids
++        ]
++        for key in stale:
++            del self._helmet_history[key]
++            self._helmet_reported.discard(key)
+diff --git a/backend/src/main/java/com/roadeye/camera/controller/CameraController.java b/backend/src/main/java/com/roadeye/camera/controller/CameraController.java
+index f8c9a2f..f860aba 100644
+--- a/backend/src/main/java/com/roadeye/camera/controller/CameraController.java
++++ b/backend/src/main/java/com/roadeye/camera/controller/CameraController.java
+@@ -5,6 +5,7 @@ import com.roadeye.camera.dto.CameraCalibrationResponse;
+ import com.roadeye.camera.dto.CameraHealthEventResponse;
+ import com.roadeye.camera.dto.CameraRequest;
+ import com.roadeye.camera.dto.CameraResponse;
++import com.roadeye.camera.entity.Camera;
+ import com.roadeye.camera.service.CameraEventService;
+ import com.roadeye.camera.service.CameraService;
+ import com.roadeye.shared.ApiResponse;
+@@ -150,8 +151,23 @@ public class CameraController {
+             Authentication authentication) {
+         CameraCalibrationResponse response = cameraService.createCalibration(id, request, authentication.getName());
+ 
+-        // Push calibration to AI Engine if stream is running (best-effort)
++        // Push calibration to AI Engine only if stream is currently RUNNING
+         try {
++            String statusUrl = aiServiceUrl + "/api/v1/streams/" + id + "/status";
++            ResponseEntity<Map> statusResp = restTemplate.getForEntity(statusUrl, Map.class);
++            Map<String, Object> statusBody = statusResp.getBody();
++            if (statusBody != null) {
++                Object streamObj = statusBody.get("stream");
++                if (streamObj instanceof Map) {
++                    @SuppressWarnings("unchecked")
++                    Map<String, Object> streamInfo = (Map<String, Object>) streamObj;
++                    String streamStatus = (String) streamInfo.getOrDefault("status", "STOPPED");
++                    if (!"RUNNING".equals(streamStatus)) {
++                        log.info("Calibration saved for camera {}. Stream is {}, will load on next start.", id, streamStatus);
++                        return ResponseEntity.ok(ApiResponse.success(response));
++                    }
++                }
++            }
+             String calibrateUrl = aiServiceUrl + "/api/v1/streams/" + id + "/calibrate";
+             Map<String, Object> calBody = new HashMap<>();
+             calBody.put("known_distance_m", request.getKnownDistance());
+@@ -160,6 +176,7 @@ public class CameraController {
+             calBody.put("reference_point2", request.getReferencePoint2());
+             HttpEntity<Map<String, Object>> calRequest = new HttpEntity<>(calBody);
+             restTemplate.postForEntity(calibrateUrl, calRequest, String.class);
++            log.info("Calibration pushed to AI Engine for camera {}", id);
+         } catch (Exception e) {
+             // Calibration saved to DB; AI Engine push is best-effort
+             log.warn("Failed to push calibration to AI Engine for camera {}: {}", id, e.getMessage());
+@@ -172,15 +189,27 @@ public class CameraController {
+     public ResponseEntity<ApiResponse<String>> startStream(@PathVariable UUID id) {
+         var camera = cameraService.getCameraEntity(id);
+         try {
++            cameraService.updateCameraHealth(id, Camera.HealthStatus.valueOf("CONNECTING"));
+             cameraEventService.startCameraStream(camera);
++            cameraService.updateCameraHealth(id, Camera.HealthStatus.ONLINE);
+             return ResponseEntity.ok(ApiResponse.success("Stream started"));
+         } catch (Exception e) {
+             String msg = e.getMessage() != null ? e.getMessage() : "";
++            cameraService.updateCameraHealth(id, Camera.HealthStatus.ERROR);
+             if (msg.contains("502") || msg.contains("Unable to connect")) {
+                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                         .body(ApiResponse.error("Unable to connect to camera stream"));
+             }
++            if (msg.contains("Camera authentication failed")) {
++                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
++                        .body(ApiResponse.error("Camera authentication failed. Verify RTSP username/password."));
++            }
++            if (msg.contains("Camera host unreachable")) {
++                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
++                        .body(ApiResponse.error("Camera host unreachable. Check network connectivity and IP address."));
++            }
+             if (msg.contains("409") || msg.contains("already running")) {
++                cameraService.updateCameraHealth(id, Camera.HealthStatus.ONLINE);
+                 return ResponseEntity.status(HttpStatus.CONFLICT)
+                         .body(ApiResponse.error("Stream already running for this camera"));
+             }
+@@ -194,8 +223,15 @@ public class CameraController {
+         var camera = cameraService.getCameraEntity(id);
+         try {
+             cameraEventService.stopCameraStream(camera);
++            cameraService.updateCameraHealth(id, Camera.HealthStatus.OFFLINE);
+             return ResponseEntity.ok(ApiResponse.success("Stream stopped"));
+         } catch (Exception e) {
++            // Stream stop is idempotent — already stopped is not a failure
++            String msg = e.getMessage() != null ? e.getMessage() : "";
++            if (msg.contains("404") || msg.contains("already_stopped")) {
++                cameraService.updateCameraHealth(id, Camera.HealthStatus.OFFLINE);
++                return ResponseEntity.ok(ApiResponse.success("Stream already stopped"));
++            }
+             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
+                     .body(ApiResponse.error("Failed to stop camera stream"));
+         }
+diff --git a/backend/src/main/java/com/roadeye/camera/dto/CameraResponse.java b/backend/src/main/java/com/roadeye/camera/dto/CameraResponse.java
+index df89865..ec265b1 100644
+--- a/backend/src/main/java/com/roadeye/camera/dto/CameraResponse.java
++++ b/backend/src/main/java/com/roadeye/camera/dto/CameraResponse.java
+@@ -38,4 +38,6 @@ public class CameraResponse {
+     private LocationSource locationSource;
+ 
+     private Double locationAccuracyMeters;
++
++    private boolean sourceUrlConfigured;
+ }
+diff --git a/backend/src/main/java/com/roadeye/camera/entity/Camera.java b/backend/src/main/java/com/roadeye/camera/entity/Camera.java
+index 7ba8a31..f833777 100644
+--- a/backend/src/main/java/com/roadeye/camera/entity/Camera.java
++++ b/backend/src/main/java/com/roadeye/camera/entity/Camera.java
+@@ -22,7 +22,7 @@ public class Camera extends BaseEntity {
+     }
+ 
+     public enum HealthStatus {
+-        ONLINE, OFFLINE, DEGRADED, UNKNOWN
++        ONLINE, OFFLINE, DEGRADED, ERROR, CONNECTING, UNKNOWN
+     }
+ 
+     public enum LocationSource {
+diff --git a/backend/src/main/java/com/roadeye/camera/service/CameraService.java b/backend/src/main/java/com/roadeye/camera/service/CameraService.java
+index 377bf1d..200e0de 100644
+--- a/backend/src/main/java/com/roadeye/camera/service/CameraService.java
++++ b/backend/src/main/java/com/roadeye/camera/service/CameraService.java
+@@ -19,6 +19,7 @@ import org.springframework.data.domain.Page;
+ import org.springframework.data.domain.Pageable;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
++import org.springframework.util.StringUtils;
+ 
+ import java.io.IOException;
+ import java.net.Socket;
+@@ -46,12 +47,37 @@ public class CameraService {
+     }
+ 
+     public CameraResponse createCamera(CameraRequest request) {
+-        if (cameraRepository.existsByCameraCode(request.getCameraCode())) {
+-            throw new BadRequestException("Camera code already exists: " + request.getCameraCode());
++        String trimmedCode = request.getCameraCode().trim();
++        Optional<Camera> existingOpt = cameraRepository.findByCameraCode(trimmedCode);
++        if (existingOpt.isPresent()) {
++            Camera existing = existingOpt.get();
++            if (existing.isActive()) {
++                throw new BadRequestException("Camera code already exists: " + trimmedCode);
++            }
++            // Reactivate deactivated camera, preserving existing UUID and evidence references
++            existing.setActive(true);
++            existing.setName(request.getName());
++            existing.setDescription(request.getDescription());
++            existing.setSourceType(request.getSourceType());
++            existing.setLocation(request.getLocation());
++            existing.setLatitude(request.getLatitude());
++            existing.setLongitude(request.getLongitude());
++            existing.setDirection(request.getDirection());
++            existing.setProcessingFps(request.getProcessingFps() != null ? request.getProcessingFps() : 15);
++            existing.setLocationSource(request.getLocationSource());
++            existing.setLocationAccuracyMeters(request.getLocationAccuracyMeters());
++            existing.setHealthStatus(Camera.HealthStatus.UNKNOWN);
++
++            if (StringUtils.hasText(request.getSourceUrl())) {
++                existing.setSourceUrlEncrypted(request.getSourceUrl());
++            }
++
++            existing = cameraRepository.save(existing);
++            return mapToCameraResponse(existing);
+         }
+ 
+         Camera camera = new Camera();
+-        camera.setCameraCode(request.getCameraCode());
++        camera.setCameraCode(trimmedCode);
+         camera.setName(request.getName());
+         camera.setDescription(request.getDescription());
+         camera.setSourceType(request.getSourceType());
+@@ -64,7 +90,7 @@ public class CameraService {
+         camera.setLocationSource(request.getLocationSource());
+         camera.setLocationAccuracyMeters(request.getLocationAccuracyMeters());
+ 
+-        if (request.getSourceUrl() != null) {
++        if (StringUtils.hasText(request.getSourceUrl())) {
+             camera.setSourceUrlEncrypted(request.getSourceUrl());
+         }
+ 
+@@ -76,6 +102,9 @@ public class CameraService {
+         Camera camera = cameraRepository.findById(id)
+                 .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", id));
+ 
++        // Trim camera code to prevent whitespace-induced duplicates
++        String trimmedCode = request.getCameraCode().trim();
++        camera.setCameraCode(trimmedCode);
+         camera.setName(request.getName());
+         camera.setDescription(request.getDescription());
+         camera.setSourceType(request.getSourceType());
+@@ -88,7 +117,7 @@ public class CameraService {
+         camera.setLocationSource(request.getLocationSource());
+         camera.setLocationAccuracyMeters(request.getLocationAccuracyMeters());
+ 
+-        if (request.getSourceUrl() != null) {
++        if (StringUtils.hasText(request.getSourceUrl())) {
+             camera.setSourceUrlEncrypted(request.getSourceUrl());
+         }
+ 
+@@ -112,6 +141,13 @@ public class CameraService {
+         return cameraRepository.findAll(pageable).map(this::mapToCameraResponse);
+     }
+ 
++    public void updateCameraHealth(UUID id, Camera.HealthStatus status) {
++        Camera camera = cameraRepository.findById(id)
++                .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", id));
++        camera.setHealthStatus(status);
++        cameraRepository.save(camera);
++    }
++
+     public void deleteCamera(UUID id) {
+         Camera camera = cameraRepository.findById(id)
+                 .orElseThrow(() -> new ResourceNotFoundException("Camera", "id", id));
+@@ -133,6 +169,7 @@ public class CameraService {
+         int port = -1;
+ 
+         if (sourceUrl != null && !sourceUrl.isBlank()) {
++            String sanitizedUrl = sanitizeSourceUrl(sourceUrl);
+             try {
+                 URI uri = URI.create(sourceUrl);
+                 host = uri.getHost();
+@@ -160,7 +197,7 @@ public class CameraService {
+                 }
+             } else {
+                 result.put("status", "unchecked");
+-                result.put("message", "Cannot parse host/port from: " + sourceUrl);
++                result.put("message", "Cannot parse host/port from: " + sanitizedUrl);
+             }
+         } else {
+             result.put("status", "unconfigured");
+@@ -171,6 +208,19 @@ public class CameraService {
+         return result;
+     }
+ 
++    private static String sanitizeSourceUrl(String url) {
++        if (url == null) return null;
++        try {
++            URI uri = URI.create(url);
++            String userInfo = uri.getUserInfo();
++            if (userInfo != null) {
++                return url.replaceFirst(userInfo + "@", "****:****@");
++            }
++        } catch (Exception ignored) {
++        }
++        return url;
++    }
++
+     @Transactional(readOnly = true)
+     public Page<CameraHealthEventResponse> getCameraHealth(UUID cameraId, Pageable pageable) {
+         if (!cameraRepository.existsById(cameraId)) {
+@@ -244,6 +294,7 @@ public class CameraService {
+                 .lastSuccessfulFrame(camera.getLastSuccessfulFrame())
+                 .locationSource(camera.getLocationSource())
+                 .locationAccuracyMeters(camera.getLocationAccuracyMeters())
++                .sourceUrlConfigured(camera.getSourceUrlEncrypted() != null && !camera.getSourceUrlEncrypted().isBlank())
+                 .createdAt(camera.getCreatedAt())
+                 .updatedAt(camera.getUpdatedAt())
+                 .build();
+diff --git a/frontend/src/pages/CameraDetailPage.tsx b/frontend/src/pages/CameraDetailPage.tsx
+index 0215c56..7c4739b 100644
+--- a/frontend/src/pages/CameraDetailPage.tsx
++++ b/frontend/src/pages/CameraDetailPage.tsx
+@@ -23,6 +23,7 @@ const CameraDetailPage: React.FC = () => {
+     direction: '',
+     processingFps: 15,
+     active: true,
++    sourceUrl: '',
+   });
+ 
+   const [cameraLocation, setCameraLocation] = useState<LocationState>({
+@@ -85,6 +86,7 @@ const CameraDetailPage: React.FC = () => {
+       direction: camera.direction || '',
+       processingFps: camera.processingFps || 15,
+       active: camera.active,
++      sourceUrl: '',
+     });
+     setCameraLocation({
+       latitude: camera.latitude || null,
+@@ -157,6 +159,12 @@ const CameraDetailPage: React.FC = () => {
+                 <input type="number" value={editData.processingFps}
+                   onChange={(e) => setEditData({ ...editData, processingFps: parseInt(e.target.value) || 15 })} />
+               </div>
++              <div className="form-group">
++                <label>Source URL {camera.sourceUrlConfigured ? '(leave blank to keep current)' : '* required'}</label>
++                <input value={editData.sourceUrl}
++                  onChange={(e) => setEditData({ ...editData, sourceUrl: e.target.value })}
++                  placeholder={camera.sourceUrlConfigured ? 'rtsp://… (leave blank to keep current)' : 'rtsp://…'} />
++              </div>
+               <div className="form-group">
+                 <label>
+                   <input type="checkbox" checked={editData.active}
+@@ -187,6 +195,7 @@ const CameraDetailPage: React.FC = () => {
+                 <dt>Direction</dt><dd>{camera.direction || '-'}</dd>
+                 <dt>Processing FPS</dt><dd>{camera.processingFps}</dd>
+                 <dt>Resolution</dt><dd>{camera.resolution || '-'}</dd>
++                <dt>Source URL</dt><dd>{camera.sourceUrlConfigured ? 'Configured' : <span className="text-muted">Not configured</span>}</dd>
+                 <dt>Active</dt><dd>{camera.active ? 'Yes' : 'No'}</dd>
+               </dl>
+               <button className="btn-secondary" onClick={startEditing}>Edit Camera</button>
+diff --git a/frontend/src/pages/CamerasPage.tsx b/frontend/src/pages/CamerasPage.tsx
+index 2cd608b..ac04a01 100644
+--- a/frontend/src/pages/CamerasPage.tsx
++++ b/frontend/src/pages/CamerasPage.tsx
+@@ -10,11 +10,13 @@ const CamerasPage: React.FC = () => {
+   const queryClient = useQueryClient();
+   const [page, setPage] = useState(0);
+   const [showForm, setShowForm] = useState(false);
++  const [showInactive, setShowInactive] = useState(false);
++  const [error, setError] = useState<string | null>(null);
+   const [formData, setFormData] = useState({
+     cameraCode: '',
+     name: '',
+     description: '',
+-    sourceType: 'RTSP',
++    sourceType: 'RTSP' as const,
+     sourceUrl: '',
+     location: '',
+     direction: '',
+@@ -42,12 +44,46 @@ const CamerasPage: React.FC = () => {
+       queryClient.invalidateQueries({ queryKey: ['traffic-map'] });
+       setShowForm(false);
+       resetForm();
++      setError(null);
++    },
++    onError: (err: any) => {
++      setError(err?.response?.data?.message || err?.message || 'Failed to create camera');
+     },
+   });
+ 
+   const deleteMutation = useMutation({
+     mutationFn: (id: string) => cameraService.delete(id),
+-    onSuccess: () => queryClient.invalidateQueries({ queryKey: ['cameras'] }),
++    onSuccess: () => {
++      queryClient.invalidateQueries({ queryKey: ['cameras'] });
++      setError(null);
++    },
++    onError: (err: any) => {
++      setError(err?.response?.data?.message || err?.message || 'Failed to deactivate camera');
++    },
++  });
++
++  const reactivateMutation = useMutation({
++    mutationFn: (cam: Camera) => cameraService.update(cam.id, {
++      cameraCode: cam.cameraCode,
++      name: cam.name,
++      description: cam.description || '',
++      sourceType: cam.sourceType,
++      location: cam.location || '',
++      latitude: cam.latitude,
++      longitude: cam.longitude,
++      direction: cam.direction || '',
++      processingFps: cam.processingFps || 15,
++      active: true,
++      locationSource: cam.locationSource || 'UNKNOWN',
++      locationAccuracyMeters: cam.locationAccuracyMeters,
++    }),
++    onSuccess: () => {
++      queryClient.invalidateQueries({ queryKey: ['cameras'] });
++      setError(null);
++    },
++    onError: (err: any) => {
++      setError(err?.response?.data?.message || err?.message || 'Failed to reactivate camera');
++    },
+   });
+ 
+   const resetForm = () => {
+@@ -76,31 +112,58 @@ const CamerasPage: React.FC = () => {
+     createMutation.mutate(payload);
+   };
+ 
+-  const handleDelete = async (id: string, e: React.MouseEvent) => {
++  const handleDelete = (id: string, e: React.MouseEvent) => {
+     e.stopPropagation();
+-    if (window.confirm('Delete this camera?')) {
++    if (window.confirm('Deactivate this camera? It will be hidden from live monitoring.')) {
+       deleteMutation.mutate(id);
+     }
+   };
+ 
++  const handleReactivate = (cam: Camera, e: React.MouseEvent) => {
++    e.stopPropagation();
++    if (window.confirm(`Reactivate camera "${cam.cameraCode}"?`)) {
++      reactivateMutation.mutate(cam);
++    }
++  };
++
+   const healthStatusClass = (status: string) => {
+     switch (status) {
+       case 'ONLINE': return 'status-online';
+       case 'OFFLINE': return 'status-offline';
+       case 'DEGRADED': return 'status-degraded';
++      case 'ERROR': return 'status-error';
++      case 'CONNECTING': return 'status-connecting';
+       default: return 'status-unknown';
+     }
+   };
+ 
++  const visibleCameras = showInactive
++    ? (data?.content || [])
++    : (data?.content?.filter(c => c.active) || []);
++
++  const activeCount = data?.content?.filter(c => c.active).length || 0;
++  const inactiveCount = (data?.content?.length || 0) - activeCount;
++
+   return (
+     <div className="cameras-page">
+       <div className="page-header">
+         <h2>Cameras</h2>
+-        <button className="btn-primary" onClick={() => setShowForm(!showForm)}>
+-          {showForm ? 'Cancel' : 'Add Camera'}
+-        </button>
++        <div className="toolbar">
++          {inactiveCount > 0 && (
++            <label className="toggle-inactive">
++              <input type="checkbox" checked={showInactive}
++                onChange={(e) => setShowInactive(e.target.checked)} />
++              {' '}Show deactivated ({inactiveCount})
++            </label>
++          )}
++          <button className="btn-primary" onClick={() => setShowForm(!showForm)}>
++            {showForm ? 'Cancel' : 'Add Camera'}
++          </button>
++        </div>
+       </div>
+ 
++      {error && <div className="alert alert-error" onClick={() => setError(null)}>{error}</div>}
++
+       {showForm && (
+         <form className="camera-form" onSubmit={handleSubmit}>
+           <h3>Register New Camera</h3>
+@@ -115,7 +178,7 @@ const CamerasPage: React.FC = () => {
+             </div>
+             <div className="form-group">
+               <label>Source Type</label>
+-              <select value={formData.sourceType} onChange={(e) => setFormData({...formData, sourceType: e.target.value})}>
++              <select value={formData.sourceType} onChange={(e) => setFormData({...formData, sourceType: e.target.value as any})}>
+                 <option value="RTSP">RTSP</option>
+                 <option value="VIDEO_FILE">Video File</option>
+                 <option value="CCTV">CCTV</option>
+@@ -157,28 +220,50 @@ const CamerasPage: React.FC = () => {
+                   <th>Type</th>
+                   <th>Location</th>
+                   <th>Status</th>
++                  <th>Active</th>
+                   <th>FPS</th>
+                   <th>Last Heartbeat</th>
+                   <th>Actions</th>
+                 </tr>
+               </thead>
+               <tbody>
+-                {data?.content?.map((camera: Camera) => (
+-                  <tr key={camera.id} onClick={() => navigate(`/cameras/${camera.id}`)} className="clickable-row">
++                {visibleCameras.map((camera: Camera) => (
++                  <tr key={camera.id}
++                    onClick={() => navigate(`/cameras/${camera.id}`)}
++                    className={`clickable-row ${camera.active ? '' : 'row-deactivated'}`}>
+                     <td>{camera.cameraCode}</td>
+                     <td>{camera.name}</td>
+                     <td>{camera.sourceType}</td>
+                     <td>{camera.location || '-'}</td>
+-                    <td><span className={`status-badge ${healthStatusClass(camera.healthStatus)}`}>{camera.healthStatus}</span></td>
++                    <td>
++                      {camera.active ? (
++                        <span className={`status-badge ${healthStatusClass(camera.healthStatus)}`}>{camera.healthStatus}</span>
++                      ) : (
++                        <span className="status-badge status-deactivated">DEACTIVATED</span>
++                      )}
++                    </td>
++                    <td>{camera.active ? 'Yes' : 'No'}</td>
+                     <td>{camera.processingFps}</td>
+                     <td>{camera.lastHeartbeat ? new Date(camera.lastHeartbeat).toLocaleString() : '-'}</td>
+                     <td>
+-                      <button className="btn-danger btn-sm" onClick={(e) => handleDelete(camera.id, e)}>Delete</button>
++                      {camera.active ? (
++                        <button className="btn-danger btn-sm" onClick={(e) => handleDelete(camera.id, e)}
++                          disabled={deleteMutation.isPending}>
++                          Delete
++                        </button>
++                      ) : (
++                        <button className="btn-primary btn-sm" onClick={(e) => handleReactivate(camera, e)}
++                          disabled={reactivateMutation.isPending}>
++                          Reactivate
++                        </button>
++                      )}
+                     </td>
+                   </tr>
+                 ))}
+-                {(!data?.content || data.content.length === 0) && (
+-                  <tr><td colSpan={8} className="empty-table">No cameras registered</td></tr>
++                {visibleCameras.length === 0 && (
++                  <tr><td colSpan={9} className="empty-table">
++                    {showInactive ? 'No cameras registered' : 'No active cameras. Toggle "Show deactivated" to view all.'}
++                  </td></tr>
+                 )}
+               </tbody>
+             </table>
+diff --git a/frontend/src/pages/LiveMonitoringPage.tsx b/frontend/src/pages/LiveMonitoringPage.tsx
+index ddbb21c..1d771d7 100644
+--- a/frontend/src/pages/LiveMonitoringPage.tsx
++++ b/frontend/src/pages/LiveMonitoringPage.tsx
+@@ -8,11 +8,26 @@ type LayoutType = '1' | '2' | '4' | 'auto';
+ const LAYOUT_KEY = 'roadeye_live_layout';
+ const SELECTED_KEY = 'roadeye_live_selected';
+ 
++function deduplicateById<T extends { id: string }>(items: T[]): T[] {
++  const seen = new Set<string>();
++  const result: T[] = [];
++  for (const item of items) {
++    if (!seen.has(item.id)) {
++      seen.add(item.id);
++      result.push(item);
++    }
++  }
++  return result;
++}
++
+ const LiveMonitoringPage: React.FC = () => {
+   const [searchParams] = useSearchParams();
+   const [cameras, setCameras] = useState<Camera[]>([]);
+   const [selectedIds, setSelectedIds] = useState<string[]>(() => {
+-    try { return JSON.parse(localStorage.getItem(SELECTED_KEY) || '[]'); }
++    try {
++      const stored = JSON.parse(localStorage.getItem(SELECTED_KEY) || '[]');
++      return Array.isArray(stored) ? [...new Set<string>(stored)] : [];
++    }
+     catch { return []; }
+   });
+   const [layout, setLayout] = useState<LayoutType>(() => {
+@@ -21,13 +36,36 @@ const LiveMonitoringPage: React.FC = () => {
+   const [streams, setStreams] = useState<Record<string, StreamStatus['stream'] | null>>({});
+   const [loading, setLoading] = useState(true);
+   const [error, setError] = useState<string | null>(null);
++  const [bulkStarting, setBulkStarting] = useState(false);
+   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
++  const selectedRef = useRef<string[]>(selectedIds);
++  selectedRef.current = selectedIds;
+ 
++  // Load cameras, deduplicate, and sanitize stale state
+   useEffect(() => {
+     setLoading(true);
+     cameraService.getAll({ size: 100 })
+       .then(res => {
+-        setCameras(res.content.filter(c => c.active));
++        const activeCameras = deduplicateById(res.content.filter(c => c.active));
++        const activeIds = new Set(activeCameras.map(c => c.id));
++        setCameras(activeCameras);
++
++        // Remove stale selectedIds that no longer match any active camera
++        const validIds = (JSON.parse(localStorage.getItem(SELECTED_KEY) || '[]') as string[])
++          .filter(id => activeIds.has(id));
++        const uniqueValid = [...new Set(validIds)];
++        setSelectedIds(uniqueValid);
++        localStorage.setItem(SELECTED_KEY, JSON.stringify(uniqueValid));
++
++        // Remove stale stream state for cameras no longer in the active list
++        setStreams(prev => {
++          const next = { ...prev };
++          Object.keys(next).forEach(id => {
++            if (!activeIds.has(id)) delete next[id];
++          });
++          return next;
++        });
++
+         setLoading(false);
+       })
+       .catch(() => {
+@@ -41,20 +79,23 @@ const LiveMonitoringPage: React.FC = () => {
+     const cameraId = searchParams.get('cameraId');
+     if (cameraId && cameras.length > 0) {
+       const cameraExists = cameras.some(c => c.id === cameraId);
+-      if (cameraExists && !selectedIds.includes(cameraId)) {
+-        const updated = [...selectedIds, cameraId];
++      const currentSelected = selectedRef.current;
++      if (cameraExists && !currentSelected.includes(cameraId)) {
++        const updated = [...currentSelected, cameraId];
+         setSelectedIds(updated);
+         localStorage.setItem(SELECTED_KEY, JSON.stringify(updated));
+       }
+     }
+-  }, [searchParams, cameras, selectedIds]);
++  }, [searchParams, cameras]);
+ 
+-  // Single centralized status poller
++  // Single centralized status poller — polls only selected IDs that exist in cameras
+   useEffect(() => {
+-    if (selectedIds.length === 0) return;
++    const validIds = selectedIds.filter(id => cameras.some(c => c.id === id));
++    if (validIds.length === 0) return;
++    const uniqueIds = [...new Set(validIds)];
+     const poll = async () => {
+       const results: Record<string, StreamStatus['stream'] | null> = {};
+-      await Promise.all(selectedIds.map(async (id) => {
++      await Promise.all(uniqueIds.map(async (id) => {
+         try {
+           const res = await cameraService.getStreamStatus(id);
+           results[id] = res.stream;
+@@ -65,11 +106,12 @@ const LiveMonitoringPage: React.FC = () => {
+     poll();
+     pollRef.current = setInterval(poll, 5000);
+     return () => { if (pollRef.current) clearInterval(pollRef.current); };
+-  }, [selectedIds.join(',')]);
++  }, [selectedIds.join(','), cameras.length]);
+ 
+   const persistSelected = useCallback((ids: string[]) => {
+-    setSelectedIds(ids);
+-    localStorage.setItem(SELECTED_KEY, JSON.stringify(ids));
++    const unique = [...new Set(ids)];
++    setSelectedIds(unique);
++    localStorage.setItem(SELECTED_KEY, JSON.stringify(unique));
+   }, []);
+ 
+   const persistLayout = useCallback((l: LayoutType) => {
+@@ -87,25 +129,37 @@ const LiveMonitoringPage: React.FC = () => {
+   const clearAll = () => persistSelected([]);
+ 
+   const handleStartAll = async () => {
+-    await Promise.all(selectedIds.map(id =>
+-      cameraService.startStream(id).catch(() => {})
+-    ));
+-    await new Promise(r => setTimeout(r, 1000));
+-    selectedIds.forEach(async (id) => {
+-      try {
+-        const res = await cameraService.getStreamStatus(id);
+-        setStreams(prev => ({ ...prev, [id]: res.stream }));
+-      } catch {}
+-    });
++    setBulkStarting(true);
++    const uniqueIds = [...new Set(selectedIds.filter(id => cameras.some(c => c.id === id)))];
++    try {
++      for (const id of uniqueIds) {
++        if (streams[id]?.status === 'RUNNING') continue;
++        try {
++          await cameraService.startStream(id);
++        } catch { /* per-card error state handles UI feedback */ }
++      }
++      await new Promise(r => setTimeout(r, 2000));
++      uniqueIds.forEach(async (id) => {
++        try {
++          const res = await cameraService.getStreamStatus(id);
++          setStreams(prev => ({ ...prev, [id]: res.stream }));
++        } catch {}
++      });
++    } finally {
++      setBulkStarting(false);
++    }
+   };
+ 
+   const handleStopAll = async () => {
+-    await Promise.all(selectedIds.map(id =>
+-      cameraService.stopStream(id).catch(() => {})
+-    ));
++    const uniqueIds = [...new Set(selectedIds.filter(id => cameras.some(c => c.id === id)))];
++    for (const id of uniqueIds) {
++      try {
++        await cameraService.stopStream(id);
++      } catch { /* ignore stop errors */ }
++    }
+     setStreams(prev => {
+       const next = { ...prev };
+-      selectedIds.forEach(id => { next[id] = null; });
++      uniqueIds.forEach(id => { next[id] = null; });
+       return next;
+     });
+   };
+@@ -130,8 +184,8 @@ const LiveMonitoringPage: React.FC = () => {
+           </div>
+           <div className="stream-actions">
+             <button className="btn btn-sm btn-primary" onClick={handleStartAll}
+-              disabled={selectedIds.length === 0}>
+-              Start All
++              disabled={selectedIds.length === 0 || bulkStarting}>
++              {bulkStarting ? 'Starting...' : 'Start All'}
+             </button>
+             <button className="btn btn-sm btn-danger" onClick={handleStopAll}
+               disabled={selectedIds.length === 0}>
+@@ -189,6 +243,7 @@ const LiveMonitoringPage: React.FC = () => {
+                       cameraId={id}
+                       cameraName={cam?.name || id.substring(0, 8)}
+                       stream={streams[id] || null}
++                      bulkStarting={bulkStarting}
+                     />
+                   );
+                 })}
+@@ -205,7 +260,8 @@ const LiveCameraCard: React.FC<{
+   cameraId: string;
+   cameraName: string;
+   stream: StreamStatus['stream'] | null;
+-}> = ({ cameraId, cameraName, stream }) => {
++  bulkStarting: boolean;
++}> = ({ cameraId, cameraName, stream, bulkStarting }) => {
+   const [frameSrc, setFrameSrc] = useState<string | null>(null);
+   const [starting, setStarting] = useState(false);
+   const [error, setError] = useState<string | null>(null);
+@@ -214,6 +270,7 @@ const LiveCameraCard: React.FC<{
+   const [isDragging, setIsDragging] = useState(false);
+   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+   const imgRef = useRef<HTMLImageElement>(null);
++  const errorRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+ 
+   const streamActive = stream?.status === 'RUNNING';
+ 
+@@ -222,18 +279,37 @@ const LiveCameraCard: React.FC<{
+     if (streamActive) {
+       const mjpegUrl = `/api/v1/cameras/${cameraId}/stream/mjpeg?_=${Date.now()}`;
+       setFrameSrc(mjpegUrl);
++      setError(null);
+     } else {
+       setFrameSrc(null);
+     }
++    return () => {
++      if (errorRetryRef.current) clearTimeout(errorRetryRef.current);
++    };
+   }, [streamActive, cameraId]);
+ 
++  const handleMjpegError = useCallback(() => {
++    // Auto-retry MJPEG connection after 3 seconds if stream is still RUNNING
++    setError('Stream disconnected, reconnecting...');
++    if (errorRetryRef.current) clearTimeout(errorRetryRef.current);
++    errorRetryRef.current = setTimeout(() => {
++      if (streamActive) {
++        const mjpegUrl = `/api/v1/cameras/${cameraId}/stream/mjpeg?_=${Date.now()}`;
++        setFrameSrc(mjpegUrl);
++        setError(null);
++      }
++    }, 3000);
++  }, [cameraId, streamActive]);
++
+   const handleStart = async () => {
++    if (streamActive || starting) return;
+     setStarting(true); setError(null);
+     try {
+       await cameraService.startStream(cameraId);
+       await new Promise(r => setTimeout(r, 2000));
+     } catch (err: any) {
+-      setError(err?.response?.data?.message || 'Failed to start stream');
++      const msg = err?.response?.data?.message || err?.message || 'Failed to start stream';
++      setError(msg);
+     } finally { setStarting(false); }
+   };
+ 
+@@ -291,7 +367,7 @@ const LiveCameraCard: React.FC<{
+                   transformOrigin: 'center center',
+                   cursor: zoom > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default',
+                 }}
+-                onError={() => setError('Failed to load video stream')}
++                onError={handleMjpegError}
+                 draggable={false} />
+             </div>
+           ) : (
+@@ -310,8 +386,9 @@ const LiveCameraCard: React.FC<{
+             ) : (
+               <>
+                 <p>Stream not active</p>
+-                <button className="btn btn-sm btn-primary" onClick={handleStart} disabled={starting}>
+-                  {starting ? 'Starting...' : 'Start'}
++                <button className="btn btn-sm btn-primary" onClick={handleStart}
++                  disabled={starting || bulkStarting}>
++                  {starting || bulkStarting ? 'Starting...' : 'Start'}
+                 </button>
+               </>
+             )}
+diff --git a/frontend/src/styles/global.css b/frontend/src/styles/global.css
+index c56a06b..d814b77 100644
+--- a/frontend/src/styles/global.css
++++ b/frontend/src/styles/global.css
+@@ -202,6 +202,8 @@ a:hover { text-decoration: underline; }
+ .data-table tr:last-child td { border-bottom: none; }
+ .clickable-row { cursor: pointer; }
+ .clickable-row:hover { background: #f8fafc; }
++.row-deactivated { opacity: 0.55; background: #f9fafb !important; }
++.row-deactivated:hover { background: #f3f4f6 !important; }
+ .empty-table { text-align: center; color: var(--text-muted); padding: 40px !important; }
+ 
+ .status-badge {
+@@ -215,7 +217,10 @@ a:hover { text-decoration: underline; }
+ .status-online { background: #dcfce7; color: #166534; }
+ .status-offline { background: #fce4ec; color: #c62828; }
+ .status-degraded { background: #fff3e0; color: #e65100; }
++.status-error { background: #fce4ec; color: #c62828; font-weight: 600; }
++.status-connecting { background: #fff7ed; color: #c2410c; }
+ .status-unknown { background: #f3f4f6; color: #6b7280; }
++.status-deactivated { background: #f3f4f6; color: #9ca3af; font-style: italic; }
+ .status-pending_review { background: #fff7ed; color: #c2410c; }
+ .status-under_review { background: #eff6ff; color: #1d4ed8; }
+ .status-confirmed { background: #dcfce7; color: #166534; }
+@@ -291,6 +296,9 @@ a:hover { text-decoration: underline; }
+ .page-header h2 { margin: 0; }
+ .filter-bar { display: flex; gap: 8px; }
+ .filter-bar input, .filter-bar select { padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
++.toolbar { display: flex; align-items: center; gap: 12px; }
++.toggle-inactive { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-muted); cursor: pointer; user-select: none; }
++.toggle-inactive input { margin: 0; }
+ 
+ .camera-form {
+   background: var(--card-bg);
+diff --git a/frontend/src/types/index.ts b/frontend/src/types/index.ts
+index 803da89..2946b1b 100644
+--- a/frontend/src/types/index.ts
++++ b/frontend/src/types/index.ts
+@@ -40,7 +40,8 @@ export interface Camera {
+   name: string;
+   description: string;
+   sourceType: 'RTSP' | 'VIDEO_FILE' | 'CCTV' | 'IP_CAMERA';
+-  sourceUrl: string;
++  sourceUrl?: string;
++  sourceUrlConfigured?: boolean;
+   location: string;
+   latitude: number;
+   longitude: number;
+@@ -48,7 +49,7 @@ export interface Camera {
+   processingFps: number;
+   resolution: string;
+   active: boolean;
+-  healthStatus: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'UNKNOWN';
++  healthStatus: 'ONLINE' | 'OFFLINE' | 'DEGRADED' | 'ERROR' | 'CONNECTING' | 'UNKNOWN';
+   lastHeartbeat: string;
+   lastSuccessfulFrame: string;
+   locationSource?: 'DEVICE_GEOLOCATION' | 'MAP_SELECTION' | 'ADDRESS_SEARCH' | 'MANUAL_COORDINATES' | 'CAMERA_METADATA' | 'IMPORT' | 'UNKNOWN';

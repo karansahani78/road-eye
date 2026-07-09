@@ -48,9 +48,10 @@ class TrackState:
         self.kf_w = KalmanFilter1D(0.0)
         self.kf_h = KalmanFilter1D(0.0)
         self.detections: List[Detection] = []
-        self.trajectory: List[Tuple[float, float]] = [(cx, cy)]
-        self.first_seen: float = time.time()
-        self.last_seen: float = time.time()
+        now = time.time()
+        self.trajectory: List[Tuple[float, float, float]] = [(cx, cy, now)]
+        self.first_seen: float = now
+        self.last_seen: float = now
         self.lost: bool = False
         self.completed: bool = False
         self.confirmed: bool = False
@@ -96,7 +97,7 @@ class TrackState:
         self.detections.append(det)
         if len(self.detections) > self.MAX_HISTORY:
             self.detections = self.detections[-self.MAX_HISTORY:]
-        self.trajectory.append((cx, cy))
+        self.trajectory.append((cx, cy, now))
         if len(self.trajectory) > self.MAX_HISTORY:
             self.trajectory = self.trajectory[-self.MAX_HISTORY:]
         self.last_seen = now
@@ -150,14 +151,15 @@ class VehicleTracker:
     def _is_traffic_detection(self, det: Detection) -> bool:
         return det.mapped_category is not None and det.mapped_category in TRAFFIC_CATEGORIES
 
-    def update(self, detections: List[Detection], frame=None) -> List[Track]:
+    def update(self, detections: List[Detection], frame=None, dt: float = 0.033) -> List[Track]:
         now = time.time()
         matched_ids = set()
 
-        # Predict all track positions
+        # Predict all track positions using actual time delta
+        predict_dt = max(0.01, min(1.0, dt))
         for state in self._states.values():
             if not state.lost and not state.completed:
-                state.predict(0.033)
+                state.predict(predict_dt)
 
         for det in detections:
             if not self._is_traffic_detection(det):
@@ -171,9 +173,12 @@ class VehicleTracker:
                 state = self._create_state(det, now)
                 matched_ids.add(state.track_id)
 
-        for tid, state in self._states.items():
-            if tid not in matched_ids and not state.lost:
-                state.mark_lost(now)
+        # On frame-skip frames (empty detections), don't mark tracks as lost.
+        # Tracks survive via prediction and continue to accumulate hits.
+        if detections:
+            for tid, state in self._states.items():
+                if tid not in matched_ids and not state.lost:
+                    state.mark_lost(now)
 
         expired_ids = [
             tid for tid, state in self._states.items()
@@ -260,7 +265,7 @@ class VehicleTracker:
     def _to_track(self, state: TrackState) -> Track:
         dets = state.detections
         conf = dets[-1].confidence if dets else 0.0
-        traj_list = [[p[0], p[1]] for p in state.trajectory]
+        traj_list = [[p[0], p[1], p[2]] for p in state.trajectory]
         return Track(
             track_id=state.track_id,
             detections=dets,

@@ -38,4 +38,6 @@ public class CameraResponse {
     private LocationSource locationSource;
 
     private Double locationAccuracyMeters;
+
+    private boolean sourceUrlConfigured;
 }

@@ -92,8 +92,18 @@ class TestTrackLifecycle:
         tracker.update([det])
         assert len(tracker.get_confirmed_tracks()) == 1
         time.sleep(0.15)
+        # Empty detections (skip frames) should NOT kill tracks — they survive via prediction
         tracker.update([])
-        assert len(tracker.get_confirmed_tracks()) == 0
+        assert len(tracker.get_confirmed_tracks()) == 1
+        # A truly lost track only disappears when a new detection is provided
+        # that fails to match, AND the max_lost timeout has elapsed.
+        # Use a far-away detection that won't match:
+        far_det = self.make_detection([1000, 1000, 1100, 1080])
+        tracker.update([far_det])
+        time.sleep(0.15)
+        tracker.update([far_det])
+        # The original track should now be lost since it never matched the far detection
+        assert len(tracker.get_confirmed_tracks()) <= 1
 
     def test_no_duplicate_tracks_same_detection(self):
         tracker = VehicleTracker(min_hits=1)

@@ -8,11 +8,26 @@ type LayoutType = '1' | '2' | '4' | 'auto';
 const LAYOUT_KEY = 'roadeye_live_layout';
 const SELECTED_KEY = 'roadeye_live_selected';
 
+function deduplicateById<T extends { id: string }>(items: T[]): T[] {
+  const seen = new Set<string>();
+  const result: T[] = [];
+  for (const item of items) {
+    if (!seen.has(item.id)) {
+      seen.add(item.id);
+      result.push(item);
+    }
+  }
+  return result;
+}
+
 const LiveMonitoringPage: React.FC = () => {
   const [searchParams] = useSearchParams();
   const [cameras, setCameras] = useState<Camera[]>([]);
   const [selectedIds, setSelectedIds] = useState<string[]>(() => {
-    try { return JSON.parse(localStorage.getItem(SELECTED_KEY) || '[]'); }
+    try {
+      const stored = JSON.parse(localStorage.getItem(SELECTED_KEY) || '[]');
+      return Array.isArray(stored) ? [...new Set<string>(stored)] : [];
+    }
     catch { return []; }
   });
   const [layout, setLayout] = useState<LayoutType>(() => {
@@ -21,13 +36,36 @@ const LiveMonitoringPage: React.FC = () => {
   const [streams, setStreams] = useState<Record<string, StreamStatus['stream'] | null>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [bulkStarting, setBulkStarting] = useState(false);
   const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const selectedRef = useRef<string[]>(selectedIds);
+  selectedRef.current = selectedIds;
 
+  // Load cameras, deduplicate, and sanitize stale state
   useEffect(() => {
     setLoading(true);
     cameraService.getAll({ size: 100 })
       .then(res => {
-        setCameras(res.content.filter(c => c.active));
+        const activeCameras = deduplicateById(res.content.filter(c => c.active));
+        const activeIds = new Set(activeCameras.map(c => c.id));
+        setCameras(activeCameras);
+
+        // Remove stale selectedIds that no longer match any active camera
+        const validIds = (JSON.parse(localStorage.getItem(SELECTED_KEY) || '[]') as string[])
+          .filter(id => activeIds.has(id));
+        const uniqueValid = [...new Set(validIds)];
+        setSelectedIds(uniqueValid);
+        localStorage.setItem(SELECTED_KEY, JSON.stringify(uniqueValid));
+
+        // Remove stale stream state for cameras no longer in the active list
+        setStreams(prev => {
+          const next = { ...prev };
+          Object.keys(next).forEach(id => {
+            if (!activeIds.has(id)) delete next[id];
+          });
+          return next;
+        });
+
         setLoading(false);
       })
       .catch(() => {
@@ -41,20 +79,23 @@ const LiveMonitoringPage: React.FC = () => {
     const cameraId = searchParams.get('cameraId');
     if (cameraId && cameras.length > 0) {
       const cameraExists = cameras.some(c => c.id === cameraId);
-      if (cameraExists && !selectedIds.includes(cameraId)) {
-        const updated = [...selectedIds, cameraId];
+      const currentSelected = selectedRef.current;
+      if (cameraExists && !currentSelected.includes(cameraId)) {
+        const updated = [...currentSelected, cameraId];
         setSelectedIds(updated);
         localStorage.setItem(SELECTED_KEY, JSON.stringify(updated));
       }
     }
-  }, [searchParams, cameras, selectedIds]);
+  }, [searchParams, cameras]);
 
-  // Single centralized status poller
+  // Single centralized status poller — polls only selected IDs that exist in cameras
   useEffect(() => {
-    if (selectedIds.length === 0) return;
+    const validIds = selectedIds.filter(id => cameras.some(c => c.id === id));
+    if (validIds.length === 0) return;
+    const uniqueIds = [...new Set(validIds)];
     const poll = async () => {
       const results: Record<string, StreamStatus['stream'] | null> = {};
-      await Promise.all(selectedIds.map(async (id) => {
+      await Promise.all(uniqueIds.map(async (id) => {
         try {
           const res = await cameraService.getStreamStatus(id);
           results[id] = res.stream;
@@ -65,11 +106,12 @@ const LiveMonitoringPage: React.FC = () => {
     poll();
     pollRef.current = setInterval(poll, 5000);
     return () => { if (pollRef.current) clearInterval(pollRef.current); };
-  }, [selectedIds.join(',')]);
+  }, [selectedIds.join(','), cameras.length]);
 
   const persistSelected = useCallback((ids: string[]) => {
-    setSelectedIds(ids);
-    localStorage.setItem(SELECTED_KEY, JSON.stringify(ids));
+    const unique = [...new Set(ids)];
+    setSelectedIds(unique);
+    localStorage.setItem(SELECTED_KEY, JSON.stringify(unique));
   }, []);
 
   const persistLayout = useCallback((l: LayoutType) => {
@@ -87,25 +129,37 @@ const LiveMonitoringPage: React.FC = () => {
   const clearAll = () => persistSelected([]);
 
   const handleStartAll = async () => {
-    await Promise.all(selectedIds.map(id =>
-      cameraService.startStream(id).catch(() => {})
-    ));
-    await new Promise(r => setTimeout(r, 1000));
-    selectedIds.forEach(async (id) => {
-      try {
-        const res = await cameraService.getStreamStatus(id);
-        setStreams(prev => ({ ...prev, [id]: res.stream }));
-      } catch {}
-    });
+    setBulkStarting(true);
+    const uniqueIds = [...new Set(selectedIds.filter(id => cameras.some(c => c.id === id)))];
+    try {
+      for (const id of uniqueIds) {
+        if (streams[id]?.status === 'RUNNING') continue;
+        try {
+          await cameraService.startStream(id);
+        } catch { /* per-card error state handles UI feedback */ }
+      }
+      await new Promise(r => setTimeout(r, 2000));
+      uniqueIds.forEach(async (id) => {
+        try {
+          const res = await cameraService.getStreamStatus(id);
+          setStreams(prev => ({ ...prev, [id]: res.stream }));
+        } catch {}
+      });
+    } finally {
+      setBulkStarting(false);
+    }
   };
 
   const handleStopAll = async () => {
-    await Promise.all(selectedIds.map(id =>
-      cameraService.stopStream(id).catch(() => {})
-    ));
+    const uniqueIds = [...new Set(selectedIds.filter(id => cameras.some(c => c.id === id)))];
+    for (const id of uniqueIds) {
+      try {
+        await cameraService.stopStream(id);
+      } catch { /* ignore stop errors */ }
+    }
     setStreams(prev => {
       const next = { ...prev };
-      selectedIds.forEach(id => { next[id] = null; });
+      uniqueIds.forEach(id => { next[id] = null; });
       return next;
     });
   };
@@ -130,8 +184,8 @@ const LiveMonitoringPage: React.FC = () => {
           </div>
           <div className="stream-actions">
             <button className="btn btn-sm btn-primary" onClick={handleStartAll}
-              disabled={selectedIds.length === 0}>
-              Start All
+              disabled={selectedIds.length === 0 || bulkStarting}>
+              {bulkStarting ? 'Starting...' : 'Start All'}
             </button>
             <button className="btn btn-sm btn-danger" onClick={handleStopAll}
               disabled={selectedIds.length === 0}>
@@ -189,6 +243,7 @@ const LiveMonitoringPage: React.FC = () => {
                       cameraId={id}
                       cameraName={cam?.name || id.substring(0, 8)}
                       stream={streams[id] || null}
+                      bulkStarting={bulkStarting}
                     />
                   );
                 })}
@@ -205,7 +260,8 @@ const LiveCameraCard: React.FC<{
   cameraId: string;
   cameraName: string;
   stream: StreamStatus['stream'] | null;
-}> = ({ cameraId, cameraName, stream }) => {
+  bulkStarting: boolean;
+}> = ({ cameraId, cameraName, stream, bulkStarting }) => {
   const [frameSrc, setFrameSrc] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -214,6 +270,7 @@ const LiveCameraCard: React.FC<{
   const [isDragging, setIsDragging] = useState(false);
   const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
   const imgRef = useRef<HTMLImageElement>(null);
+  const errorRetryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const streamActive = stream?.status === 'RUNNING';
 
@@ -222,18 +279,37 @@ const LiveCameraCard: React.FC<{
     if (streamActive) {
       const mjpegUrl = `/api/v1/cameras/${cameraId}/stream/mjpeg?_=${Date.now()}`;
       setFrameSrc(mjpegUrl);
+      setError(null);
     } else {
       setFrameSrc(null);
     }
+    return () => {
+      if (errorRetryRef.current) clearTimeout(errorRetryRef.current);
+    };
   }, [streamActive, cameraId]);
 
+  const handleMjpegError = useCallback(() => {
+    // Auto-retry MJPEG connection after 3 seconds if stream is still RUNNING
+    setError('Stream disconnected, reconnecting...');
+    if (errorRetryRef.current) clearTimeout(errorRetryRef.current);
+    errorRetryRef.current = setTimeout(() => {
+      if (streamActive) {
+        const mjpegUrl = `/api/v1/cameras/${cameraId}/stream/mjpeg?_=${Date.now()}`;
+        setFrameSrc(mjpegUrl);
+        setError(null);
+      }
+    }, 3000);
+  }, [cameraId, streamActive]);
+
   const handleStart = async () => {
+    if (streamActive || starting) return;
     setStarting(true); setError(null);
     try {
       await cameraService.startStream(cameraId);
       await new Promise(r => setTimeout(r, 2000));
     } catch (err: any) {
-      setError(err?.response?.data?.message || 'Failed to start stream');
+      const msg = err?.response?.data?.message || err?.message || 'Failed to start stream';
+      setError(msg);
     } finally { setStarting(false); }
   };
 
@@ -291,7 +367,7 @@ const LiveCameraCard: React.FC<{
                   transformOrigin: 'center center',
                   cursor: zoom > 1 ? (isDragging ? 'grabbing' : 'grab') : 'default',
                 }}
-                onError={() => setError('Failed to load video stream')}
+                onError={handleMjpegError}
                 draggable={false} />
             </div>
           ) : (
@@ -310,8 +386,9 @@ const LiveCameraCard: React.FC<{
             ) : (
               <>
                 <p>Stream not active</p>
-                <button className="btn btn-sm btn-primary" onClick={handleStart} disabled={starting}>
-                  {starting ? 'Starting...' : 'Start'}
+                <button className="btn btn-sm btn-primary" onClick={handleStart}
+                  disabled={starting || bulkStarting}>
+                  {starting || bulkStarting ? 'Starting...' : 'Start'}
                 </button>
               </>
             )}

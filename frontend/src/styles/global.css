@@ -202,6 +202,8 @@ a:hover { text-decoration: underline; }
 .data-table tr:last-child td { border-bottom: none; }
 .clickable-row { cursor: pointer; }
 .clickable-row:hover { background: #f8fafc; }
+.row-deactivated { opacity: 0.55; background: #f9fafb !important; }
+.row-deactivated:hover { background: #f3f4f6 !important; }
 .empty-table { text-align: center; color: var(--text-muted); padding: 40px !important; }
 
 .status-badge {
@@ -215,7 +217,10 @@ a:hover { text-decoration: underline; }
 .status-online { background: #dcfce7; color: #166534; }
 .status-offline { background: #fce4ec; color: #c62828; }
 .status-degraded { background: #fff3e0; color: #e65100; }
+.status-error { background: #fce4ec; color: #c62828; font-weight: 600; }
+.status-connecting { background: #fff7ed; color: #c2410c; }
 .status-unknown { background: #f3f4f6; color: #6b7280; }
+.status-deactivated { background: #f3f4f6; color: #9ca3af; font-style: italic; }
 .status-pending_review { background: #fff7ed; color: #c2410c; }
 .status-under_review { background: #eff6ff; color: #1d4ed8; }
 .status-confirmed { background: #dcfce7; color: #166534; }
@@ -291,6 +296,9 @@ a:hover { text-decoration: underline; }
 .page-header h2 { margin: 0; }
 .filter-bar { display: flex; gap: 8px; }
 .filter-bar input, .filter-bar select { padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
+.toolbar { display: flex; align-items: center; gap: 12px; }
+.toggle-inactive { display: flex; align-items: center; gap: 4px; font-size: 13px; color: var(--text-muted); cursor: pointer; user-select: none; }
+.toggle-inactive input { margin: 0; }
 
 .camera-form {
   background: var(--card-bg);

@@ -142,6 +142,20 @@ async def start_stream(req: StreamStartRequest, api_key: str = Depends(verify_ap
         logger.error(f"Stream connection failed for camera {req.camera_id}: source_url={source_url_safe}")
         raise HTTPException(status_code=502, detail="Unable to connect to camera stream")
 
+    if result == StreamStartResult.CONNECTION_FAILED_AUTH:
+        logger.error(f"Stream authentication failed for camera {req.camera_id}: source_url={source_url_safe}")
+        raise HTTPException(
+            status_code=502,
+            detail="Camera authentication failed. Verify RTSP username/password.",
+        )
+
+    if result == StreamStartResult.CONNECTION_FAILED_UNREACHABLE:
+        logger.error(f"Stream host unreachable for camera {req.camera_id}: source_url={source_url_safe}")
+        raise HTTPException(
+            status_code=502,
+            detail="Camera host unreachable. Check network connectivity and IP address.",
+        )
+
     if result != StreamStartResult.SUCCESS:
         raise HTTPException(status_code=500, detail=f"Failed to start stream for camera {req.camera_id}")
 
@@ -163,7 +177,7 @@ async def stop_stream(req: StreamStopRequest, api_key: str = Depends(verify_api_
 
     success = await stream_manager.stop_stream(req.camera_id)
     if not success:
-        raise HTTPException(status_code=404, detail=f"No active stream for camera {req.camera_id}")
+        return {"status": "already_stopped", "camera_id": req.camera_id}
 
     return {"status": "stopped", "camera_id": req.camera_id}
 
@@ -175,7 +189,7 @@ async def stream_status(camera_id: str, api_key: str = Depends(verify_api_key)):
 
     status = stream_manager.get_stream_status(camera_id)
     if status is None:
-        raise HTTPException(status_code=404, detail=f"No stream for camera {camera_id}")
+        return {"camera_id": camera_id, "stream": {"status": "STOPPED", "fps": 0, "vehicles_detected": 0, "frame_count": 0, "dropped_frames": 0}}
 
     return {"camera_id": camera_id, "stream": status}
 
@@ -190,7 +204,7 @@ async def stream_frame(camera_id: str):
     if frame is None:
         raise HTTPException(status_code=404, detail="No frame available")
 
-    ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 75])
+    ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, settings.FRAME_QUALITY])
     if not ret:
         raise HTTPException(status_code=500, detail="Failed to encode frame")
 
@@ -217,7 +231,7 @@ async def stream_mjpeg(camera_id: str):
                 break
             frame = await stream_manager.get_frame(camera_id)
             if frame is not None:
-                ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 65])
+                ret, jpeg = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, settings.MJPEG_QUALITY])
                 if ret:
                     yield (
                         b'--frame\r\n'

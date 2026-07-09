@@ -68,6 +68,11 @@ class Track(BaseModel):
     hit_count: int = 0
 
 
+class PlateDetection(BaseModel):
+    bbox: List[float]
+    confidence: float
+
+
 class PlateResult(BaseModel):
     plate_text: str
     normalized_plate: str
@@ -80,6 +85,14 @@ class PlateResult(BaseModel):
     alternatives: Optional[List[str]] = None
     detector_version: Optional[str] = None
     ocr_model_version: Optional[str] = None
+    plate_detector_version: Optional[str] = None
+
+
+class HelmetResult(BaseModel):
+    bbox: List[float]
+    confidence: float
+    has_helmet: bool
+    class_id: int
 
 
 class SpeedMeasurement(BaseModel):
@@ -125,6 +138,7 @@ class ViolationCandidate(BaseModel):
 
 
 class VehicleObservation(BaseModel):
+    model_config = {'protected_namespaces': ()}
     camera_id: str
     timestamp: datetime
     track_id: int

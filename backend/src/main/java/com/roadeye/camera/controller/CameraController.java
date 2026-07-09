@@ -5,6 +5,7 @@ import com.roadeye.camera.dto.CameraCalibrationResponse;
 import com.roadeye.camera.dto.CameraHealthEventResponse;
 import com.roadeye.camera.dto.CameraRequest;
 import com.roadeye.camera.dto.CameraResponse;
+import com.roadeye.camera.entity.Camera;
 import com.roadeye.camera.service.CameraEventService;
 import com.roadeye.camera.service.CameraService;
 import com.roadeye.shared.ApiResponse;
@@ -27,6 +28,7 @@ import org.springframework.web.bind.annotation.DeleteMapping;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
+import org.springframework.web.bind.annotation.PatchMapping;
 import org.springframework.web.bind.annotation.PutMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestMapping;
@@ -115,6 +117,20 @@ public class CameraController {
         return ResponseEntity.ok(ApiResponse.success(result));
     }
 
+    @PatchMapping("/{id}/source-url")
+    public ResponseEntity<ApiResponse<CameraResponse>> updateSourceUrl(
+            @PathVariable UUID id,
+            @RequestBody Map<String, String> body) {
+        String sourceUrl = body.get("sourceUrl");
+        if (sourceUrl == null || sourceUrl.isBlank()) {
+            return ResponseEntity.badRequest()
+                    .body(ApiResponse.error("sourceUrl is required"));
+        }
+        CameraResponse response = cameraService.updateSourceUrl(id, sourceUrl);
+        log.info("Source URL updated for camera {}: source_type={}", id, response.getSourceType());
+        return ResponseEntity.ok(ApiResponse.success(response));
+    }
+
     @GetMapping("/{id}/health")
     public ResponseEntity<ApiResponse<PagedResponse<CameraHealthEventResponse>>> getCameraHealth(
             @PathVariable UUID id,
@@ -150,8 +166,23 @@ public class CameraController {
             Authentication authentication) {
         CameraCalibrationResponse response = cameraService.createCalibration(id, request, authentication.getName());
 
-        // Push calibration to AI Engine if stream is running (best-effort)
+        // Push calibration to AI Engine only if stream is currently RUNNING
         try {
+            String statusUrl = aiServiceUrl + "/api/v1/streams/" + id + "/status";
+            ResponseEntity<Map> statusResp = restTemplate.getForEntity(statusUrl, Map.class);
+            Map<String, Object> statusBody = statusResp.getBody();
+            if (statusBody != null) {
+                Object streamObj = statusBody.get("stream");
+                if (streamObj instanceof Map) {
+                    @SuppressWarnings("unchecked")
+                    Map<String, Object> streamInfo = (Map<String, Object>) streamObj;
+                    String streamStatus = (String) streamInfo.getOrDefault("status", "STOPPED");
+                    if (!"RUNNING".equals(streamStatus)) {
+                        log.info("Calibration saved for camera {}. Stream is {}, will load on next start.", id, streamStatus);
+                        return ResponseEntity.ok(ApiResponse.success(response));
+                    }
+                }
+            }
             String calibrateUrl = aiServiceUrl + "/api/v1/streams/" + id + "/calibrate";
             Map<String, Object> calBody = new HashMap<>();
             calBody.put("known_distance_m", request.getKnownDistance());
@@ -160,6 +191,7 @@ public class CameraController {
             calBody.put("reference_point2", request.getReferencePoint2());
             HttpEntity<Map<String, Object>> calRequest = new HttpEntity<>(calBody);
             restTemplate.postForEntity(calibrateUrl, calRequest, String.class);
+            log.info("Calibration pushed to AI Engine for camera {}", id);
         } catch (Exception e) {
             // Calibration saved to DB; AI Engine push is best-effort
             log.warn("Failed to push calibration to AI Engine for camera {}: {}", id, e.getMessage());
@@ -172,17 +204,33 @@ public class CameraController {
     public ResponseEntity<ApiResponse<String>> startStream(@PathVariable UUID id) {
         var camera = cameraService.getCameraEntity(id);
         try {
+            cameraService.updateCameraHealth(id, Camera.HealthStatus.CONNECTING);
             cameraEventService.startCameraStream(camera);
+            cameraService.updateCameraHealth(id, Camera.HealthStatus.ONLINE);
             return ResponseEntity.ok(ApiResponse.success("Stream started"));
         } catch (Exception e) {
             String msg = e.getMessage() != null ? e.getMessage() : "";
+            cameraService.updateCameraHealth(id, Camera.HealthStatus.ERROR);
+            if (msg.contains("Camera authentication failed")) {
+                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                        .body(ApiResponse.error("Camera authentication failed. Verify RTSP username/password."));
+            }
+            if (msg.contains("Camera host unreachable")) {
+                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                        .body(ApiResponse.error("Camera host unreachable. Check network connectivity and IP address."));
+            }
+            if (msg.contains("Camera stream not found")) {
+                return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
+                        .body(ApiResponse.error("Camera stream not found. Check RTSP URL path."));
+            }
+            if (msg.contains("409") || msg.contains("already running")) {
+                cameraService.updateCameraHealth(id, Camera.HealthStatus.ONLINE);
+                return ResponseEntity.status(HttpStatus.CONFLICT)
+                        .body(ApiResponse.error("Stream already running for this camera"));
+            }
             if (msg.contains("502") || msg.contains("Unable to connect")) {
                 return ResponseEntity.status(HttpStatus.BAD_GATEWAY)
                         .body(ApiResponse.error("Unable to connect to camera stream"));
-            }
-            if (msg.contains("409") || msg.contains("already running")) {
-                return ResponseEntity.status(HttpStatus.CONFLICT)
-                        .body(ApiResponse.error("Stream already running for this camera"));
             }
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(ApiResponse.error("Failed to start camera stream"));
@@ -194,8 +242,15 @@ public class CameraController {
         var camera = cameraService.getCameraEntity(id);
         try {
             cameraEventService.stopCameraStream(camera);
+            cameraService.updateCameraHealth(id, Camera.HealthStatus.OFFLINE);
             return ResponseEntity.ok(ApiResponse.success("Stream stopped"));
         } catch (Exception e) {
+            // Stream stop is idempotent — already stopped is not a failure
+            String msg = e.getMessage() != null ? e.getMessage() : "";
+            if (msg.contains("404") || msg.contains("already_stopped")) {
+                cameraService.updateCameraHealth(id, Camera.HealthStatus.OFFLINE);
+                return ResponseEntity.ok(ApiResponse.success("Stream already stopped"));
+            }
             return ResponseEntity.status(HttpStatus.INTERNAL_SERVER_ERROR)
                     .body(ApiResponse.error("Failed to stop camera stream"));
         }

@@ -54,6 +54,31 @@
 ### FIXED IN SESSION 5 (2026-07-09)
 - **YOLO class mapping bug — motorcycle shown as CAR:** Fixed `COCO_TO_ROADEYE` and `COCO_CLASS_NAMES` dictionaries in `vehicle_detector.py` that used wrong class IDs (2→MOTORCYCLE, 3→CAR, 4→BUS, 5→TRUCK) that didn't match the actual YOLOv8n COCO model indices (2=car, 3=motorcycle, 5=bus, 7=truck). Corrected all mappings and added `_verify_class_mapping()` method that dynamically checks the loaded model's `model.names` against code constants at startup and logs errors on mismatch. Updated test to expect correct model IDs. AI Engine tests: 20/20 pass.
 
+### FIXED IN SESSION 6 (2026-07-09) — End-to-End Pipeline Audit
+- **Detection confidence threshold lowered:** 0.5→0.3 — YOLOv8n (nano) produces lower confidence on small/distant vehicles; tracker's `min_hits=3` + NMS (iou=0.5) already filters temporal noise. Recovers valid detections that 0.5 rejected.
+- **Trajectory now includes timestamps:** TrackState trajectory changed from `(cx, cy)` to `(cx, cy, timestamp)`. Speed estimator uses actual time deltas instead of assuming constant frame interval. Fixes speed calculation when frames are skipped or FPS varies.
+- **Detection objects get timestamps:** `Detection.timestamp` now populated with `datetime.now(timezone.utc)` when created in vehicle_detector.
+- **Speed diagnostics added:** `SpeedEstimator.diagnostic_status()` and `diagnostic_track_status()` return exact reasons for speed unavailability (`SPEED_UNAVAILABLE_NO_CALIBRATION`, `SPEED_UNAVAILABLE_INSUFFICIENT_HISTORY`, `SPEED_UNAVAILABLE_TRACK_LOST`, `SPEED_AVAILABLE`). Speed status displayed on annotated frames.
+- **Annotation rendering improved:** Label background with padding for readability; adaptive font scale/thickness based on frame width; speed status displayed in overlay (green=available, yellow=unavailable).
+- **Plate detector audit:** Confirmed no dedicated license plate detection model exists. Current code crops bottom 45% of vehicle bbox and runs EasyOCR directly — no real plate localization model. ANPR will not work reliably for real-world use until a dedicated plate detector is added.
+
+### FIXED IN SESSION 7 (2026-07-09)
+- **AI Engine PyTorch 2.6 `weights_only` crash**: Pinned `torch==2.5.1` + `torchvision==0.20.1` in `requirements.txt` to prevent `pip install` from pulling PyTorch ≥2.6 (which flips `torch.load(weights_only=True)` default). Upgraded `ultralytics==8.4.90` (from 8.1.0) for latest fixes. All 3 models (yolov8n.pt, plate.pt, helmet.pt) now load successfully. Verified: 64/64 AI tests, 46/46 backend tests, frontend build, Docker build, container startup.
+
+### FIXED IN SESSION 8 (2026-07-09)
+- **Vehicle detection pipeline — motorcycle disappeared after YOLO**: `DETECTION_FRAME_SKIP=2` caused YOLO to run every other frame. On skip frames, `detections=[]` was passed to `VehicleTracker.update()`, which marked ALL active tracks as lost (`tracker.py:176-178`). New tracks were created on detection frames but immediately lost on skip frames — they never reached `min_hits=3` to become confirmed. **Fix**: `VehicleTracker.update()` now short-circuits the "mark lost" step when `detections` list is empty (`tracker.py:177`). Tracks survive skip frames via prediction and continue accumulating hits. Verified: 1 track confirmed with 40+ hits, bounding boxes render, vehicle count=1, Kafka publishes events.
+- **Traffic Map no camera marker**: Camera "Front Door" was registered without `latitude`/`longitude` (both `null`). `TrafficMapService` uses `findByLatitudeIsNotNullAndLongitudeIsNotNullAndActiveTrue()` — null coordinates excluded the camera from map results. **Fix**: Updated camera via `PUT /api/v1/cameras/{id}` with coordinates `27.1637, 84.7243` (Parsa, Nepal). Verified: `mappedCameras: 1`, camera appears on map with lat/lng, health=ONLINE, stream=RUNNING.
+
+### REMAINING TECHNICAL LIMITATIONS
+- **No dedicated license plate detection model** — ANPR uses naive bbox-bottom-crop + EasyOCR, unreliable for real scenes
+- **YOLOv8n is the smallest variant** — limited accuracy for small/distant objects; upgrade to v8m or v8l improves detection but increases latency
+- **No Nepal-specific fine-tuning** — COCO pretrained weights only; Nepal traffic scenes (microbuses, auto-rickshaws, unique plate formats) not covered
+- **Speed requires explicit calibration** — no calibration stored in DB is auto-loaded; N/A until calibrate API called
+- **Analytics queries use N+1 anti-pattern** — traffic-volume (168 queries for 7d), violation-trends (60 queries for 30d)
+- **No consumer retry/DLQ** — poisoned Kafka messages silently skipped
+- **No GPU utilization** — CPU-only inference limits throughput
+- **Backend has no stream registry** — cannot reconcile orphaned AI Engine streams
+
 ### STILL TO VERIFY
 - End-to-end runtime test with real RTSP camera
 - Database flooding verification (measure row counts over 60s)
@@ -63,7 +88,7 @@
 - Camera health event resolution (backend found for health event)
 - Clean shutdown (no ProducerClosed errors)
 - Map tile rendering after Docker frontend rebuild
-- AI Engine Docker build (Dockerfile exists but untested)
+- AI Engine Docker build (Dockerfile exists but untested) — ✅ VERIFIED in session 7
 - Violation human review workflow end-to-end
 
 ## Project Overview

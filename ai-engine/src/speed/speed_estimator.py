@@ -38,6 +38,20 @@ class SpeedEstimator:
     def has_calibration(self) -> bool:
         return self.pixels_per_meter is not None and self.pixels_per_meter > 0
 
+    def diagnostic_status(self) -> str:
+        if not self.has_calibration():
+            return "SPEED_UNAVAILABLE_NO_CALIBRATION"
+        return "SPEED_AVAILABLE"
+
+    def diagnostic_track_status(self, track: Track) -> str:
+        if not self.has_calibration():
+            return "SPEED_UNAVAILABLE_NO_CALIBRATION"
+        if track.lost or track.completed:
+            return "SPEED_UNAVAILABLE_TRACK_LOST"
+        if len(track.trajectory) < MIN_TRAJECTORY_POINTS:
+            return f"SPEED_UNAVAILABLE_INSUFFICIENT_HISTORY ({len(track.trajectory)}/<{MIN_TRAJECTORY_POINTS})"
+        return "SPEED_AVAILABLE"
+
     def cleanup(self, active_track_ids: set):
         stale = [tid for tid in self._prev_speeds if tid not in active_track_ids]
         for tid in stale:
@@ -72,6 +86,19 @@ class SpeedEstimator:
         if len(recent) < 2:
             return None
 
+        # Use actual timestamps if available (trajectory point = [cx, cy, timestamp])
+        # Fall back to frame_interval heuristic if timestamps are identical or missing
+        pt = recent[0]
+        last_pt = recent[-1]
+        has_timestamps = len(pt) >= 3 and len(last_pt) >= 3 and last_pt[2] > pt[2]
+        if has_timestamps:
+            duration_s = last_pt[2] - pt[2]
+        else:
+            duration_s = len(recent) * frame_interval
+
+        if duration_s <= 0:
+            return None
+
         total_pixels = 0.0
         for i in range(1, len(recent)):
             dx = recent[i][0] - recent[i - 1][0]
@@ -79,9 +106,8 @@ class SpeedEstimator:
             total_pixels += (dx ** 2 + dy ** 2) ** 0.5
 
         distance_m = total_pixels / ppm if ppm > 0 else 0.0
-        duration_s = len(recent) * frame_interval
 
-        if duration_s <= 0 or distance_m <= 0:
+        if distance_m <= 0:
             return None
 
         speed_mps = distance_m / duration_s

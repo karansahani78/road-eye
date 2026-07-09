@@ -1,10 +1,12 @@
 import logging
 import time
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
 
 from src.common.models import (
     Track, SpeedMeasurement, PlateResult, ViolationCandidate, ViolationType,
+    HelmetResult,
 )
 
 logger = logging.getLogger(__name__)
@@ -25,11 +27,18 @@ class CameraViolationConfig:
 
 
 class ViolationDetector:
-    def __init__(self, detector_version: str = "1.0"):
+    def __init__(self, detector_version: str = "1.0",
+                 helmet_temporal_window: int = 5):
         self.detector_version = detector_version
+        self.helmet_temporal_window = helmet_temporal_window
         self.camera_configs: Dict[str, CameraViolationConfig] = {}
         self._reported_violations: Dict[str, float] = {}
         self._dedup_ttl = 60.0
+        # Track no-helmet state across frames: {(camera_id, track_id): [has_helmet, ...]}
+        # Keyed by (camera_id, track_id) tuple to prevent cross-camera collisions
+        self._helmet_history: Dict[Tuple[str, int], List[bool]] = defaultdict(list)
+        # Set of (camera_id, track_id) tuples that already reported NO_HELMET
+        self._helmet_reported: set[Tuple[str, int]] = set()
 
     def configure_camera(self, camera_id: str, config: CameraViolationConfig):
         self.camera_configs[camera_id] = config
@@ -42,7 +51,8 @@ class ViolationDetector:
     def detect(self, tracks: List[Track],
                speed_measurements: List[SpeedMeasurement],
                plate_results: List[PlateResult],
-               camera_id: str = "unknown") -> List[ViolationCandidate]:
+               camera_id: str = "unknown",
+               helmet_results: Optional[Dict[int, List[HelmetResult]]] = None) -> List[ViolationCandidate]:
         config = self.get_config(camera_id)
         violations: List[ViolationCandidate] = []
 
@@ -63,6 +73,11 @@ class ViolationDetector:
             violations.extend(self._detect_wrong_way(
                 tracks, camera_id, config, plate_by_track, track_by_id))
 
+        # Helmet detection: always check if we have helmet results
+        if helmet_results:
+            violations.extend(self._detect_no_helmet(
+                helmet_results, camera_id, plate_by_track, track_by_id))
+
         return violations
 
     def _is_duplicate(self, dedup_key: str) -> bool:
@@ -78,6 +93,68 @@ class ViolationDetector:
                 if now - v < self._dedup_ttl
             }
         return False
+
+    def _detect_no_helmet(self, helmet_results: Dict[int, List[HelmetResult]],
+                          camera_id: str,
+                          plate_by_track: Dict[int, PlateResult],
+                          track_by_id: Dict[int, Track]) -> List[ViolationCandidate]:
+        violations = []
+        now = time.time()
+        cam_track_key = None
+
+        for track_id, results in helmet_results.items():
+            cam_track_key = (camera_id, track_id)
+
+            # Determine if this track has any Without Helmet detection
+            any_without = any(not r.has_helmet for r in results)
+            any_with = any(r.has_helmet for r in results)
+
+            # If model returned no detections at all for this track, skip
+            if not results:
+                continue
+
+            # Update temporal history
+            self._helmet_history[cam_track_key].append(not any_without)
+            if len(self._helmet_history[cam_track_key]) > self.helmet_temporal_window:
+                self._helmet_history[cam_track_key].pop(0)
+
+            # Temporal confirmation: check if last N frames show no helmet
+            history = self._helmet_history[cam_track_key]
+            if len(history) < self.helmet_temporal_window:
+                continue
+
+            no_helmet_count = sum(1 for h in history if not h)
+            # Confirm no-helmet if >60% of window shows without helmet
+            if no_helmet_count < max(2, self.helmet_temporal_window * 0.6):
+                continue
+
+            # Skip if we already reported for this track+camera
+            if cam_track_key in self._helmet_reported:
+                continue
+
+            dedup_key = f"{camera_id}:{track_id}:NO_HELMET"
+            if self._is_duplicate(dedup_key):
+                continue
+
+            self._helmet_reported.add(cam_track_key)
+            pr = plate_by_track.get(track_id)
+            tr = track_by_id.get(track_id)
+
+            confidence = min(1.0, no_helmet_count / self.helmet_temporal_window)
+            violations.append(ViolationCandidate(
+                camera_id=camera_id,
+                timestamp=datetime.now(timezone.utc),
+                violation_type=ViolationType.NO_HELMET,
+                confidence=confidence,
+                track_id=track_id,
+                vehicle_category=(tr.category if tr else None),
+                plate_text=(pr.plate_text if pr else None),
+                normalized_plate=(pr.normalized_plate if pr else None),
+                plate_country=(pr.country if pr else None),
+                detector_version=self.detector_version,
+            ))
+
+        return violations
 
     def _detect_overspeeding(self, speed_measurements: List[SpeedMeasurement],
                              camera_id: str, config: CameraViolationConfig,
@@ -164,3 +241,12 @@ class ViolationDetector:
             ))
 
         return violations
+
+    def cleanup_helmet_state(self, camera_id: str, active_track_ids: set):
+        stale = [
+            key for key in self._helmet_history
+            if key[0] == camera_id and key[1] not in active_track_ids
+        ]
+        for key in stale:
+            del self._helmet_history[key]
+            self._helmet_reported.discard(key)
