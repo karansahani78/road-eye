@@ -67,6 +67,7 @@ const CamerasPage: React.FC = () => {
     e.preventDefault();
     const payload = {
       ...formData,
+      sourceUrl: formData.sourceUrl,
       latitude: cameraLocation.latitude,
       longitude: cameraLocation.longitude,
       locationSource: cameraLocation.locationSource,

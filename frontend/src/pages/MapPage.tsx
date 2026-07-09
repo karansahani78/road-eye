@@ -185,7 +185,7 @@ const MapPage: React.FC = () => {
   const mapRef = useRef<L.Map | null>(null);
   const handleMapReady = useCallback((m: L.Map) => { mapRef.current = m; }, []);
 
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ['traffic-map', timeRange],
     queryFn: () => trafficMapService.getTrafficMap(timeRange),
     refetchInterval: 30000,
@@ -354,7 +354,7 @@ const MapPage: React.FC = () => {
           </select>
           <button
             className="btn-sm btn-outline"
-            onClick={() => {}}
+            onClick={() => refetch()}
             title="Refresh data"
           >
             ↻
@@ -499,7 +499,7 @@ const MapPage: React.FC = () => {
           <MapContainer
             center={center}
             zoom={13}
-            style={{ width: '100%', flex: 1, minHeight: 400 }}
+            style={{ width: '100%', height: '100%', minHeight: 400 }}
             zoomControl={true}
           >
             {baseLayer === 'street' ? (

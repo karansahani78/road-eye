@@ -15,8 +15,8 @@ import com.roadeye.violation.repository.ViolationRepository;
 import org.springframework.stereotype.Service;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
+import java.util.function.Function;
 import java.util.stream.Collectors;
 
 @Service
@@ -46,6 +46,9 @@ public class TrafficMapService {
         List<Camera> allCameras = cameraRepository.findByActiveTrue();
         List<Camera> mappedCameras = cameraRepository.findByLatitudeIsNotNullAndLongitudeIsNotNullAndActiveTrue();
 
+        Map<String, Camera> cameraMap = mappedCameras.stream()
+                .collect(Collectors.toMap(c -> c.getId().toString(), Function.identity()));
+
         long totalCameras = allCameras.size();
         long mappedCount = mappedCameras.size();
         long unmappedCount = cameraRepository.countByLatitudeIsNullAndActiveTrue();
@@ -63,13 +66,13 @@ public class TrafficMapService {
 
         List<MapViolationDTO> violationDTOs = violationRepository.findRecentViolations(since)
                 .stream()
-                .map(this::buildViolationDTO)
+                .map(v -> buildViolationDTO(v, cameraMap))
                 .limit(100)
                 .collect(Collectors.toList());
 
         List<MapAlertDTO> alertDTOs = alertRepository.findActiveAlerts()
                 .stream()
-                .map(this::buildAlertDTO)
+                .map(a -> buildAlertDTO(a, cameraMap))
                 .limit(100)
                 .collect(Collectors.toList());
 
@@ -130,26 +133,15 @@ public class TrafficMapService {
                 .build();
     }
 
-    private MapViolationDTO buildViolationDTO(Violation v) {
-        String cameraName = null;
-        Double lat = null;
-        Double lng = null;
-        try {
-            Camera cam = cameraRepository.findById(UUID.fromString(v.getCameraId())).orElse(null);
-            if (cam != null) {
-                cameraName = cam.getName();
-                lat = cam.getLatitude();
-                lng = cam.getLongitude();
-            }
-        } catch (IllegalArgumentException ignored) {}
-
+    private MapViolationDTO buildViolationDTO(Violation v, Map<String, Camera> cameraMap) {
+        Camera cam = cameraMap.get(v.getCameraId());
         return MapViolationDTO.builder()
                 .id(v.getId())
                 .violationType(v.getViolationType())
                 .cameraId(v.getCameraId())
-                .cameraName(cameraName)
-                .latitude(lat)
-                .longitude(lng)
+                .cameraName(cam != null ? cam.getName() : null)
+                .latitude(cam != null ? cam.getLatitude() : null)
+                .longitude(cam != null ? cam.getLongitude() : null)
                 .status(v.getStatus())
                 .confidence(v.getConfidence())
                 .vehicleCategory(v.getVehicleCategory())
@@ -159,29 +151,16 @@ public class TrafficMapService {
                 .build();
     }
 
-    private MapAlertDTO buildAlertDTO(Alert a) {
-        String cameraName = null;
-        Double lat = null;
-        Double lng = null;
-        if (a.getCameraId() != null) {
-            try {
-                Camera cam = cameraRepository.findById(UUID.fromString(a.getCameraId())).orElse(null);
-                if (cam != null) {
-                    cameraName = cam.getName();
-                    lat = cam.getLatitude();
-                    lng = cam.getLongitude();
-                }
-            } catch (IllegalArgumentException ignored) {}
-        }
-
+    private MapAlertDTO buildAlertDTO(Alert a, Map<String, Camera> cameraMap) {
+        Camera cam = a.getCameraId() != null ? cameraMap.get(a.getCameraId()) : null;
         return MapAlertDTO.builder()
                 .id(a.getId())
                 .type(a.getType())
                 .severity(a.getSeverity())
                 .cameraId(a.getCameraId())
-                .cameraName(cameraName)
-                .latitude(lat)
-                .longitude(lng)
+                .cameraName(cam != null ? cam.getName() : null)
+                .latitude(cam != null ? cam.getLatitude() : null)
+                .longitude(cam != null ? cam.getLongitude() : null)
                 .message(a.getMessage())
                 .acknowledged(a.isAcknowledged())
                 .createdAt(a.getCreatedAt())

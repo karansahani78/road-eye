@@ -6,8 +6,7 @@ from contextlib import asynccontextmanager
 from typing import Dict, Optional
 
 import cv2
-import numpy as np
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, Depends, Header
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
@@ -91,6 +90,12 @@ app.add_middleware(
 )
 
 
+async def verify_api_key(x_api_key: str = Header("")):
+    if settings.API_KEY and x_api_key != settings.API_KEY:
+        raise HTTPException(status_code=401, detail="Invalid or missing API key")
+    return x_api_key
+
+
 @app.get("/health")
 async def health():
     if stream_manager is None:
@@ -105,20 +110,28 @@ async def health():
 
 
 @app.get("/api/v1/streams")
-async def list_streams():
+async def list_streams(api_key: str = Depends(verify_api_key)):
     if stream_manager is None:
         return {"streams": {}}
     return {"streams": stream_manager.get_stream_info()}
 
 
 @app.post("/api/v1/streams/start")
-async def start_stream(req: StreamStartRequest):
+async def start_stream(req: StreamStartRequest, api_key: str = Depends(verify_api_key)):
     if stream_manager is None:
         raise HTTPException(status_code=503, detail="Stream manager not ready")
 
     # Log safe diagnostic info — never log the password
     source_url_safe = _sanitize_url(req.source_url)
     logger.info(f"Starting stream: camera_id={req.camera_id} source_url={source_url_safe} fps={req.fps}")
+
+    # Configure violation detection BEFORE starting stream to avoid race
+    if req.speed_limit is not None or req.allowed_direction is not None:
+        config = CameraViolationConfig(
+            speed_limit_kmh=req.speed_limit or 60.0,
+            allowed_direction=req.allowed_direction,
+        )
+        stream_manager.configure_violation_detection(req.camera_id, config)
 
     result = await stream_manager.start_stream(req.camera_id, req.source_url, req.fps)
     if result == StreamStartResult.STREAM_ALREADY_EXISTS:
@@ -132,16 +145,6 @@ async def start_stream(req: StreamStartRequest):
     if result != StreamStartResult.SUCCESS:
         raise HTTPException(status_code=500, detail=f"Failed to start stream for camera {req.camera_id}")
 
-    # Configure violation detection for this camera if settings provided
-    if req.speed_limit is not None or req.allowed_direction is not None:
-        processor = stream_manager.active_streams.get(req.camera_id)
-        if processor:
-            config = CameraViolationConfig(
-                speed_limit_kmh=req.speed_limit or 60.0,
-                allowed_direction=req.allowed_direction,
-            )
-            processor.violation_detector.configure_camera(req.camera_id, config)
-
     # Apply calibration if provided at stream start
     if req.known_distance_m is not None and req.reference_pixels is not None:
         processor = stream_manager.active_streams.get(req.camera_id)
@@ -154,7 +157,7 @@ async def start_stream(req: StreamStartRequest):
 
 
 @app.post("/api/v1/streams/stop")
-async def stop_stream(req: StreamStopRequest):
+async def stop_stream(req: StreamStopRequest, api_key: str = Depends(verify_api_key)):
     if stream_manager is None:
         raise HTTPException(status_code=503, detail="Stream manager not ready")
 
@@ -166,7 +169,7 @@ async def stop_stream(req: StreamStopRequest):
 
 
 @app.get("/api/v1/streams/{camera_id}/status")
-async def stream_status(camera_id: str):
+async def stream_status(camera_id: str, api_key: str = Depends(verify_api_key)):
     if stream_manager is None:
         raise HTTPException(status_code=503, detail="Stream manager not ready")
 
@@ -241,6 +244,7 @@ async def configure_camera(
     camera_id: str,
     speed_limit: Optional[float] = Query(None),
     allowed_direction: Optional[str] = Query(None),
+    api_key: str = Depends(verify_api_key),
 ):
     """Configure violation detection parameters for a camera."""
     if stream_manager is None:
@@ -265,7 +269,7 @@ async def configure_camera(
 
 
 @app.post("/api/v1/streams/{camera_id}/calibrate")
-async def calibrate_stream(camera_id: str, req: CalibrateRequest):
+async def calibrate_stream(camera_id: str, req: CalibrateRequest, api_key: str = Depends(verify_api_key)):
     """Set or update camera calibration for speed estimation."""
     if stream_manager is None:
         raise HTTPException(status_code=503, detail="Stream manager not ready")

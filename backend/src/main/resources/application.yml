@@ -63,6 +63,9 @@ jwt:
   secret: ${JWT_SECRET:iofsdafijaifadsifjawpiojrew3w242342oipkofksajdf=}
   expiration: ${JWT_EXPIRATION:86400000}
 
+cors:
+  allowed-origins: ${CORS_ALLOWED_ORIGINS:http://localhost:3000}
+
 ai:
   service:
     url: ${AI_SERVICE_URL:http://localhost:8000}
@@ -82,6 +85,7 @@ kafka:
     speed-estimations: speed-estimations
     violation-candidates: violation-candidates
     evidence-created: evidence-created
+    incident-events: incident-events
 
 logging:
   level:

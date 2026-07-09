@@ -10,6 +10,7 @@ import numpy as np
 from src.config import Settings
 from src.common.event_publisher import EventPublisher
 from src.stream.video_processor import VideoProcessor
+from src.violation.violation_detector import CameraViolationConfig
 
 logger = logging.getLogger(__name__)
 
@@ -144,6 +145,14 @@ class StreamManager:
         processor.set_calibration(known_distance_m, reference_pixels, calibration_data)
         logger.info(f"Stream calibration applied for camera {camera_id}")
         return True
+
+    def configure_violation_detection(self, camera_id: str, config: CameraViolationConfig):
+        processor = self.active_streams.get(camera_id)
+        if processor is None:
+            logger.info(f"Pre-configuring violation detection for camera {camera_id} (will apply on stream start)")
+            return
+        processor.violation_detector.configure_camera(camera_id, config)
+        logger.info(f"Violation detection configured for camera {camera_id}")
 
     async def get_frame(self, camera_id: str) -> Optional[np.ndarray]:
         processor = self.active_streams.get(camera_id)

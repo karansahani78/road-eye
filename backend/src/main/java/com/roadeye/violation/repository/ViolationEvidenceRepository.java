@@ -7,4 +7,5 @@ import java.util.UUID;
 
 public interface ViolationEvidenceRepository extends JpaRepository<ViolationEvidence, UUID> {
     List<ViolationEvidence> findByViolationId(String violationId);
+    List<ViolationEvidence> findByViolationIdIn(List<String> violationIds);
 }

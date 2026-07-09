@@ -25,7 +25,8 @@ class CameraViolationConfig:
 
 
 class ViolationDetector:
-    def __init__(self):
+    def __init__(self, detector_version: str = "1.0"):
+        self.detector_version = detector_version
         self.camera_configs: Dict[str, CameraViolationConfig] = {}
         self._reported_violations: Dict[str, float] = {}
         self._dedup_ttl = 60.0
@@ -45,11 +46,22 @@ class ViolationDetector:
         config = self.get_config(camera_id)
         violations: List[ViolationCandidate] = []
 
+        plate_by_track: Dict[int, PlateResult] = {}
+        for pr in plate_results:
+            if pr.track_id is not None:
+                plate_by_track[pr.track_id] = pr
+
+        track_by_id: Dict[int, Track] = {}
+        for t in tracks:
+            track_by_id[t.track_id] = t
+
         if config.overspeeding_enabled:
-            violations.extend(self._detect_overspeeding(speed_measurements, camera_id, config))
+            violations.extend(self._detect_overspeeding(
+                speed_measurements, camera_id, config, plate_by_track, track_by_id))
 
         if config.wrong_way_enabled and config.allowed_direction:
-            violations.extend(self._detect_wrong_way(tracks, camera_id, config))
+            violations.extend(self._detect_wrong_way(
+                tracks, camera_id, config, plate_by_track, track_by_id))
 
         return violations
 
@@ -68,13 +80,17 @@ class ViolationDetector:
         return False
 
     def _detect_overspeeding(self, speed_measurements: List[SpeedMeasurement],
-                             camera_id: str, config: CameraViolationConfig) -> List[ViolationCandidate]:
+                             camera_id: str, config: CameraViolationConfig,
+                             plate_by_track: Dict[int, PlateResult],
+                             track_by_id: Dict[int, Track]) -> List[ViolationCandidate]:
         violations = []
         for sm in speed_measurements:
             if sm.speed_kmh > config.speed_limit_kmh * 1.1:
                 dedup_key = f"{camera_id}:{sm.track_id}:OVERSPEEDING"
                 if self._is_duplicate(dedup_key):
                     continue
+                pr = plate_by_track.get(sm.track_id) if sm.track_id is not None else None
+                tr = track_by_id.get(sm.track_id) if sm.track_id is not None else None
                 violations.append(ViolationCandidate(
                     camera_id=camera_id,
                     timestamp=datetime.now(timezone.utc),
@@ -83,11 +99,18 @@ class ViolationDetector:
                     track_id=sm.track_id,
                     speed_kmh=sm.speed_kmh,
                     speed_limit=config.speed_limit_kmh,
+                    vehicle_category=(tr.category if tr else None),
+                    plate_text=(pr.plate_text if pr else None),
+                    normalized_plate=(pr.normalized_plate if pr else None),
+                    plate_country=(pr.country if pr else None),
+                    detector_version=self.detector_version,
                 ))
         return violations
 
     def _detect_wrong_way(self, tracks: List[Track],
-                          camera_id: str, config: CameraViolationConfig) -> List[ViolationCandidate]:
+                          camera_id: str, config: CameraViolationConfig,
+                          plate_by_track: Dict[int, PlateResult],
+                          track_by_id: Dict[int, Track]) -> List[ViolationCandidate]:
         violations = []
 
         for track in tracks:
@@ -124,12 +147,20 @@ class ViolationDetector:
                         f"actual={actual_direction} expected={config.allowed_direction} "
                         f"displacement={displacement:.1f}px camera={camera_id}")
 
+            pr = plate_by_track.get(track.track_id)
+            tr = track_by_id.get(track.track_id)
+
             violations.append(ViolationCandidate(
                 camera_id=camera_id,
                 timestamp=datetime.now(timezone.utc),
                 violation_type=ViolationType.WRONG_WAY_DRIVING,
                 confidence=min(1.0, displacement / 200.0),
                 track_id=track.track_id,
+                vehicle_category=(tr.category if tr else None),
+                plate_text=(pr.plate_text if pr else None),
+                normalized_plate=(pr.normalized_plate if pr else None),
+                plate_country=(pr.country if pr else None),
+                detector_version=self.detector_version,
             ))
 
         return violations

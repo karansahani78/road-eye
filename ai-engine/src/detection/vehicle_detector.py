@@ -7,23 +7,24 @@ from src.common.models import Detection, VehicleCategory
 
 logger = logging.getLogger(__name__)
 
-# COCO class to RoadEye category mapping for YOLOv8
-# Only actual traffic vehicle classes are included.
-# All non-traffic COCO classes (person=0, chair=56, etc.) are silently discarded.
+# YOLOv8n (COCO) class ID to RoadEye category mapping.
+# Verified dynamically against the actual loaded model at startup.
+# YOLOv8n COCO indices: 1=bicycle, 2=car, 3=motorcycle, 5=bus, 7=truck.
+# Non-traffic COCO classes (person=0, airplane=4, chair=56, etc.) are silently discarded.
 COCO_TO_ROADEYE = {
     1: VehicleCategory.BICYCLE,
-    2: VehicleCategory.MOTORCYCLE,
-    3: VehicleCategory.CAR,
-    4: VehicleCategory.BUS,
-    5: VehicleCategory.TRUCK,
+    2: VehicleCategory.CAR,
+    3: VehicleCategory.MOTORCYCLE,
+    5: VehicleCategory.BUS,
+    7: VehicleCategory.TRUCK,
 }
 
 COCO_CLASS_NAMES = {
     1: "bicycle",
-    2: "motorcycle",
-    3: "car",
-    4: "bus",
-    5: "truck",
+    2: "car",
+    3: "motorcycle",
+    5: "bus",
+    7: "truck",
 }
 
 # Set of accepted COCO class IDs — fast lookup
@@ -50,6 +51,7 @@ class VehicleDetector:
                 logger.info(f"Model file not found at {model_path}, downloading {model_name}...")
                 self.model = YOLO(model_name)
                 logger.info(f"{model_name} model downloaded and loaded")
+            self._verify_class_mapping()
         except ImportError:
             logger.warning("ultralytics not installed. Using DNN-based detector.")
             self._load_dnn_model()
@@ -62,6 +64,20 @@ class VehicleDetector:
         except Exception as e:
             logger.error(f"Failed to load DNN model: {e}")
             self.model = None
+
+    def _verify_class_mapping(self):
+        if self.model is None or not hasattr(self.model, 'names'):
+            return
+        mismatches = []
+        for cid, expected_name in COCO_CLASS_NAMES.items():
+            actual_name = self.model.names.get(cid, "")
+            if actual_name.lower() != expected_name.lower():
+                mismatches.append(f"  class_id={cid}: code says \"{expected_name}\", model says \"{actual_name}\"")
+        if mismatches:
+            logger.error(f"CLASS MAPPING MISMATCH for model {self.model_name}:")
+            for m in mismatches:
+                logger.error(m)
+            logger.error("Fix COCO_TO_ROADEYE and COCO_CLASS_NAMES in vehicle_detector.py")
 
     def detect(self, frame: np.ndarray) -> List[Detection]:
         if self.model is None:

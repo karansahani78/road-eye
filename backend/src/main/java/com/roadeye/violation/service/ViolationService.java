@@ -15,8 +15,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.List;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 @Transactional
@@ -49,7 +49,50 @@ public class ViolationService {
         } else {
             page = violationRepository.findAll(pageable);
         }
-        return page.map(this::mapToResponse);
+
+        List<Violation> violations = page.getContent();
+        if (violations.isEmpty()) {
+            return page.map(this::mapToResponse);
+        }
+
+        Set<String> cameraIds = violations.stream()
+                .map(Violation::getCameraId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+
+        Map<String, String> cameraNames = batchLoadCameraNames(cameraIds);
+
+        Map<String, String> evidenceIds = new HashMap<>();
+        if (!violations.isEmpty()) {
+            List<String> violationIdStrings = violations.stream()
+                    .map(v -> v.getId().toString())
+                    .collect(Collectors.toList());
+            evidenceRepository.findByViolationIdIn(violationIdStrings).stream()
+                    .collect(Collectors.groupingBy(ViolationEvidence::getViolationId))
+                    .forEach((vid, evList) -> evidenceIds.put(vid, evList.get(0).getId().toString()));
+        }
+
+        return page.map(v -> {
+            ViolationResponse.ViolationResponseBuilder builder = ViolationResponse.builder()
+                    .id(v.getId())
+                    .cameraId(v.getCameraId())
+                    .cameraName(cameraNames.get(v.getCameraId()))
+                    .timestamp(v.getViolatedAt())
+                    .violationType(v.getViolationType())
+                    .confidence(v.getConfidence())
+                    .status(v.getStatus())
+                    .vehicleCategory(v.getVehicleCategory())
+                    .plateText(v.getPlateText())
+                    .normalizedPlate(v.getNormalizedPlate())
+                    .plateCountry(v.getPlateCountry())
+                    .speedKmh(v.getSpeedKmh())
+                    .speedLimit(v.getSpeedLimit())
+                    .trackId(v.getTrackId())
+                    .evidenceId(evidenceIds.get(v.getId().toString()))
+                    .createdAt(v.getCreatedAt())
+                    .detectorVersion(v.getDetectorVersion());
+            return builder.build();
+        });
     }
 
     @Transactional(readOnly = true)
@@ -96,6 +139,22 @@ public class ViolationService {
         return evidenceRepository.save(evidence);
     }
 
+    private Map<String, String> batchLoadCameraNames(Set<String> cameraIds) {
+        Map<String, String> names = new HashMap<>();
+        if (cameraIds.isEmpty()) return names;
+        List<UUID> uuids = new ArrayList<>();
+        for (String cid : cameraIds) {
+            try {
+                uuids.add(UUID.fromString(cid));
+            } catch (IllegalArgumentException ignored) {}
+        }
+        if (!uuids.isEmpty()) {
+            cameraRepository.findAllById(uuids)
+                    .forEach(c -> names.put(c.getId().toString(), c.getName()));
+        }
+        return names;
+    }
+
     private ViolationResponse mapToResponse(Violation violation) {
         String cameraName = null;
         if (violation.getCameraId() != null) {
@@ -130,6 +189,7 @@ public class ViolationService {
                 .trackId(violation.getTrackId())
                 .evidenceId(evidenceId)
                 .createdAt(violation.getCreatedAt())
+                .detectorVersion(violation.getDetectorVersion())
                 .build();
     }
 }

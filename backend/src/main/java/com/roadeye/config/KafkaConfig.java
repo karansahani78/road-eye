@@ -16,6 +16,7 @@ public class KafkaConfig {
     public static final String TOPIC_SPEED_ESTIMATIONS = "speed-estimations";
     public static final String TOPIC_VIOLATION_CANDIDATES = "violation-candidates";
     public static final String TOPIC_EVIDENCE_CREATED = "evidence-created";
+    public static final String TOPIC_INCIDENT_EVENTS = "incident-events";
 
     @Bean
     public KafkaTemplate<String, Object> kafkaTemplate(ProducerFactory<String, Object> producerFactory) {
@@ -65,6 +66,14 @@ public class KafkaConfig {
     @Bean
     public NewTopic evidenceCreatedTopic() {
         return TopicBuilder.name(TOPIC_EVIDENCE_CREATED)
+                .partitions(3)
+                .replicas(1)
+                .build();
+    }
+
+    @Bean
+    public NewTopic incidentEventsTopic() {
+        return TopicBuilder.name(TOPIC_INCIDENT_EVENTS)
                 .partitions(3)
                 .replicas(1)
                 .build();

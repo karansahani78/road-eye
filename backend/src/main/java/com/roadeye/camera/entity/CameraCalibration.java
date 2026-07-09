@@ -3,6 +3,7 @@ package com.roadeye.camera.entity;
 import com.roadeye.shared.BaseEntity;
 import jakarta.persistence.Column;
 import jakarta.persistence.Entity;
+import jakarta.persistence.FetchType;
 import jakarta.persistence.JoinColumn;
 import jakarta.persistence.OneToOne;
 import jakarta.persistence.Table;
@@ -17,7 +18,7 @@ import java.time.Instant;
 @Table(name = "camera_calibrations")
 public class CameraCalibration extends BaseEntity {
 
-    @OneToOne
+    @OneToOne(fetch = FetchType.LAZY)
     @JoinColumn(name = "camera_id", unique = true, nullable = false)
     private Camera camera;
 

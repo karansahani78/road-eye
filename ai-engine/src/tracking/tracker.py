@@ -35,9 +35,10 @@ class KalmanFilter1D:
 
 
 class TrackState:
-    def __init__(self, cx: float, cy: float, category: VehicleCategory, track_id: int):
+    def __init__(self, cx: float, cy: float, category: VehicleCategory, track_id: int, min_hits: int = 3):
         self.track_id = track_id
         self.category = category
+        self.min_hits = min_hits
         self.cx = cx
         self.cy = cy
         self.vx = 0.0
@@ -63,6 +64,8 @@ class TrackState:
         self.cx = px + self.vx * dt
         self.cy = py + self.vy * dt
         return (self.cx, self.cy)
+
+    MAX_HISTORY = 500
 
     def update(self, det: Detection, now: float):
         bbox = det.bbox
@@ -91,14 +94,18 @@ class TrackState:
         self.last_bbox = bbox
 
         self.detections.append(det)
+        if len(self.detections) > self.MAX_HISTORY:
+            self.detections = self.detections[-self.MAX_HISTORY:]
         self.trajectory.append((cx, cy))
+        if len(self.trajectory) > self.MAX_HISTORY:
+            self.trajectory = self.trajectory[-self.MAX_HISTORY:]
         self.last_seen = now
         self.lost = False
         self.completed = False
         self.hit_count = len(self.detections)
         self.category = det.mapped_category
 
-        if not self.confirmed and self.hit_count >= 3:
+        if not self.confirmed and self.hit_count >= self.min_hits:
             self.confirmed = True
             logger.debug(f"Track {self.track_id} CONFIRMED after {self.hit_count} hits")
 
@@ -194,7 +201,7 @@ class VehicleTracker:
         cy = (bbox[1] + bbox[3]) / 2
         tid = self._next_track_id
         self._next_track_id += 1
-        state = TrackState(cx, cy, det.mapped_category, tid)
+        state = TrackState(cx, cy, det.mapped_category, tid, min_hits=self.min_hits)
         state.update(det, now)
         self._states[tid] = state
         return state

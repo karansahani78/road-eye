@@ -16,6 +16,7 @@ import AuditLogsPage from './pages/AuditLogsPage';
 import SystemHealthPage from './pages/SystemHealthPage';
 import RoadsPage from './pages/RoadsPage';
 import LiveMonitoringPage from './pages/LiveMonitoringPage';
+import IncidentsPage from './pages/IncidentsPage';
 import Layout from './components/Layout';
 
 const App: React.FC = () => {
@@ -33,6 +34,7 @@ const App: React.FC = () => {
             <Route path="/roads" element={<RoadsPage />} />
             <Route path="/violations" element={<ViolationsPage />} />
             <Route path="/violations/:id" element={<ViolationDetailPage />} />
+            <Route path="/incidents" element={<IncidentsPage />} />
             <Route path="/alerts" element={<AlertsPage />} />
             <Route path="/map" element={<MapPage />} />
             <Route path="/analytics" element={<AnalyticsPage />} />

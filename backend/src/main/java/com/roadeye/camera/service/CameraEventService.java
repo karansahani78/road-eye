@@ -124,15 +124,18 @@ public class CameraEventService {
         }
     }
 
-    @Scheduled(fixedRate = 60000)
+    @Scheduled(fixedRate = 300000)
     public void checkCameraHealth() {
         List<Camera> activeCameras = cameraRepository.findByActiveTrue();
+        Instant now = Instant.now();
         for (Camera camera : activeCameras) {
             CameraHealthEvent event = new CameraHealthEvent();
             event.setCamera(camera);
             event.setStatus(camera.getHealthStatus().name());
-            event.setRecordedAt(Instant.now());
+            event.setMessage("Scheduled health snapshot");
+            event.setRecordedAt(now);
             healthEventRepository.save(event);
         }
+        log.info("Health snapshot recorded for {} cameras", activeCameras.size());
     }
 }

@@ -44,6 +44,7 @@ class VehicleCategory(str, Enum):
 
 
 class Detection(BaseModel):
+    model_config = {'protected_namespaces': ()}
     bbox: List[float]
     confidence: float
     class_id: int
@@ -77,6 +78,8 @@ class PlateResult(BaseModel):
     bbox: Optional[List[float]] = None
     quality_score: Optional[float] = None
     alternatives: Optional[List[str]] = None
+    detector_version: Optional[str] = None
+    ocr_model_version: Optional[str] = None
 
 
 class SpeedMeasurement(BaseModel):
@@ -116,6 +119,7 @@ class ViolationCandidate(BaseModel):
     plate_country: Optional[str] = None
     speed_kmh: Optional[float] = None
     speed_limit: Optional[float] = None
+    detector_version: Optional[str] = None
     evidence_frames: Optional[List[str]] = None
     metadata: Optional[dict] = None
 

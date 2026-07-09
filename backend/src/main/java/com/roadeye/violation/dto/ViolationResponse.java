@@ -31,4 +31,5 @@ public class ViolationResponse {
     private Integer trackId;
     private String evidenceId;
     private Instant createdAt;
+    private String detectorVersion;
 }

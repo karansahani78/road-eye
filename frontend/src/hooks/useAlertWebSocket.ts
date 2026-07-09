@@ -18,6 +18,10 @@ export function useAlertWebSocket(enabled = true) {
           queryClient.invalidateQueries({ queryKey: ['alerts'] });
           queryClient.invalidateQueries({ queryKey: ['dashboard'] });
         });
+        client.subscribe('/topic/incidents', () => {
+          queryClient.invalidateQueries({ queryKey: ['incidents'] });
+          queryClient.invalidateQueries({ queryKey: ['dashboard'] });
+        });
       },
     });
 

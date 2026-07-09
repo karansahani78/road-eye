@@ -1,4 +1,5 @@
 import asyncio
+import base64
 import cv2
 import logging
 import time
@@ -64,7 +65,9 @@ class VideoProcessor:
         )
         self.speed_estimator = SpeedEstimator()
         self.plate_recognizer = PlateRecognizer()
-        self.violation_detector = ViolationDetector()
+        self.violation_detector = ViolationDetector(
+            detector_version=f"yolov8-{self.vehicle_detector.model_version}",
+        )
         self._mark_timing("ALL_COMPONENTS_INITIALIZED")
 
         self._track_speeds: dict[int, float] = {}
@@ -74,6 +77,9 @@ class VideoProcessor:
         self._track_publish_counter: dict[int, int] = {}
         self._speed_publish_counter: dict[int, int] = {}
         self._frame_counter = 0
+        self._violation_publish_counter: dict[str, int] = {}
+        self._last_cleanup_time = time.time()
+        self._inference_latency_ms: float = 0.0
 
     def _mark_timing(self, label: str):
         self._timing[label] = time.time()
@@ -126,6 +132,27 @@ class VideoProcessor:
         reconnect_delay = RECONNECT_BASE_DELAY
 
         while self.running:
+            if cap is None:
+                if reconnect_attempt >= RECONNECT_MAX_ATTEMPTS:
+                    logger.error(f"Max reconnection attempts reached for {self.camera_id}")
+                    self.error = True
+                    self.error_message = "Max reconnection attempts reached"
+                    await self._publish_health_event("OFFLINE", "Max reconnection attempts reached")
+                    break
+                reconnect_attempt += 1
+                logger.info(f"Reconnecting {self.camera_id} attempt {reconnect_attempt}/{RECONNECT_MAX_ATTEMPTS} "
+                             f"in {reconnect_delay:.0f}s")
+                await asyncio.sleep(reconnect_delay)
+                cap = await self._connect_source()
+                if cap is not None:
+                    reconnect_attempt = 0
+                    reconnect_delay = RECONNECT_BASE_DELAY
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, CAP_PROP_BUFFER_SIZE)
+                    self._mark_timing("RTSP_RECONNECTED")
+                else:
+                    reconnect_delay = min(reconnect_delay * 2, RECONNECT_MAX_DELAY)
+                continue
+
             loop_start = time.time()
             ret, frame = cap.read()
 
@@ -134,26 +161,7 @@ class VideoProcessor:
                 self.dropped_frames += 1
                 cap.release()
                 cap = None
-
-                if reconnect_attempt < RECONNECT_MAX_ATTEMPTS:
-                    logger.info(f"Reconnecting {self.camera_id} attempt {reconnect_attempt + 1}/{RECONNECT_MAX_ATTEMPTS} "
-                                 f"in {reconnect_delay:.0f}s")
-                    await asyncio.sleep(reconnect_delay)
-                    cap = await self._connect_source()
-                    if cap is not None:
-                        reconnect_attempt = 0
-                        reconnect_delay = RECONNECT_BASE_DELAY
-                        cap.set(cv2.CAP_PROP_BUFFERSIZE, CAP_PROP_BUFFER_SIZE)
-                        self._mark_timing("RTSP_RECONNECTED")
-                        continue
-                    reconnect_attempt += 1
-                    reconnect_delay = min(reconnect_delay * 2, RECONNECT_MAX_DELAY)
-                else:
-                    logger.error(f"Max reconnection attempts reached for {self.camera_id}")
-                    self.error = True
-                    self.error_message = "Max reconnection attempts reached"
-                    await self._publish_health_event("OFFLINE", "Max reconnection attempts reached")
-                    break
+                reconnect_delay = RECONNECT_BASE_DELAY
                 continue
 
             reconnect_attempt = 0
@@ -177,6 +185,7 @@ class VideoProcessor:
             publish_interval = max(1, int(self.target_fps / 2))
             should_publish = (self._frame_counter % publish_interval == 0)
 
+            inference_start = time.time()
             try:
                 detections = self.vehicle_detector.detect(frame_rgb)
                 if self.frame_count == 1:
@@ -203,6 +212,7 @@ class VideoProcessor:
                 await self._publish_plates(plate_results, should_publish)
                 await self._publish_speeds(speed_results, should_publish)
                 await self._publish_violations(violations)
+                self._inference_latency_ms = (time.time() - inference_start) * 1000
 
                 self.vehicles_detected = len(confirmed)
 
@@ -229,6 +239,10 @@ class VideoProcessor:
                 last_health_publish = now
                 await self._publish_health_event("ONLINE", "Processing")
 
+            if now - self._last_cleanup_time > 60:
+                self._last_cleanup_time = now
+                self._cleanup_publish_state()
+
             elapsed = time.time() - loop_start
             sleep_time = max(0, frame_interval - elapsed)
             if sleep_time > 0:
@@ -242,7 +256,7 @@ class VideoProcessor:
 
     def set_calibration(self, known_distance_m: float, reference_pixels: float,
                         calibration_data: Optional[str] = None):
-        self.speed_estimator.calibrate(known_distance_m, reference_pixels)
+        self.speed_estimator.calibrate(known_distance_m, reference_pixels, calibration_data)
         logger.info(f"Calibration set for camera {self.camera_id}: "
                      f"distance={known_distance_m}m, pixels={reference_pixels}px")
 
@@ -310,6 +324,7 @@ class VideoProcessor:
                 "processed_frames": self.frame_count,
                 "dropped_frames": self.dropped_frames,
                 "current_fps": self.current_fps,
+                "inference_latency_ms": self._inference_latency_ms,
             },
             camera_id=self.camera_id,
         )
@@ -340,6 +355,8 @@ class VideoProcessor:
                     "confidence": det.confidence,
                     "direction": track.direction,
                     "bbox": det.bbox,
+                    "model_name": self.vehicle_detector.model_name,
+                    "model_version": self.vehicle_detector.model_version,
                 },
                 camera_id=self.camera_id,
                 correlation_id=f"track-{tid}",
@@ -365,6 +382,9 @@ class VideoProcessor:
                     "quality_score": plate.quality_score,
                     "track_id": plate.track_id,
                     "bbox": plate.bbox,
+                    "alternatives": plate.alternatives,
+                    "detector_version": plate.detector_version,
+                    "ocr_model_version": plate.ocr_model_version,
                 },
                 camera_id=self.camera_id,
             )
@@ -385,6 +405,7 @@ class VideoProcessor:
                     "distance_m": speed.distance_m,
                     "duration_ms": speed.duration_ms,
                     "algorithm_version": speed.algorithm_version,
+                    "calibration_version": speed.calibration_version,
                 },
                 camera_id=self.camera_id,
                 correlation_id=f"track-{tid}",
@@ -392,9 +413,39 @@ class VideoProcessor:
 
     async def _publish_violations(self, violations):
         for violation in violations:
+            dedup_key = f"{violation.violation_type.value}:{violation.track_id}"
+            self._violation_publish_counter[dedup_key] = self._violation_publish_counter.get(dedup_key, 0) + 1
+            # Throttle: publish first occurrence, then at most once per ~30 frames
+            if self._violation_publish_counter[dedup_key] > 1 and self._frame_counter % 30 != 0:
+                continue
+            payload = violation.model_dump()
+            async with self.latest_frame_lock:
+                if self.latest_frame is not None:
+                    _, buf = cv2.imencode(".jpg", self.latest_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                    payload["evidence_frames"] = [base64.b64encode(buf).decode("utf-8")]
             await self.event_publisher.publish(
                 topic=self.settings.KAFKA_VIOLATION_CANDIDATES_TOPIC,
-                payload=violation.model_dump(),
+                payload=payload,
                 camera_id=self.camera_id,
-                correlation_id=f"violation-{violation.violation_type.value}-{datetime.utcnow().timestamp()}",
+                correlation_id=f"violation-{violation.violation_type.value}-{violation.track_id}-{datetime.utcnow().timestamp()}",
             )
+
+    def _cleanup_publish_state(self):
+        active_track_ids = {t.track_id for t in self.tracker.get_confirmed_tracks()}
+        stale_tids = [tid for tid in self._published_tracks if tid not in active_track_ids]
+        for tid in stale_tids:
+            self._published_tracks.discard(tid)
+            self._published_plates.discard(tid)
+            self._track_speeds.pop(tid, None)
+            self._track_plates.pop(tid, None)
+            self._track_publish_counter.pop(tid, None)
+            self._speed_publish_counter.pop(tid, None)
+        stale_violations = [k for k in self._violation_publish_counter
+                            if not any(t.track_id == int(k.split(":")[-1]) for t in self.tracker.get_confirmed_tracks()
+                                       if k.split(":")[-1].isdigit())]
+        for k in stale_violations:
+            self._violation_publish_counter.pop(k, None)
+        self.speed_estimator.cleanup(active_track_ids)
+        if stale_tids or stale_violations:
+            logger.debug(f"Cleaned up publish state for camera {self.camera_id}: "
+                         f"{len(stale_tids)} tracks, {len(stale_violations)} violations")

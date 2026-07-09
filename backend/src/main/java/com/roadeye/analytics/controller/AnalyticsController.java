@@ -100,10 +100,16 @@ public class AnalyticsController {
 
     @GetMapping("/vehicle-categories")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getVehicleCategories() {
+        List<String> categories = vehicleObservationRepository.findAllDistinctCategories();
         Map<String, Long> categoryCounts = new LinkedHashMap<>();
-        for (String category : List.of("CAR", "BUS", "TRUCK", "MOTORCYCLE", "BICYCLE", "SCOOTER", "MOPED", "OTHER", "UNKNOWN")) {
+        for (String category : categories) {
             long count = vehicleObservationRepository.countByCategory(category);
             if (count > 0) categoryCounts.put(category, count);
+        }
+        if (categoryCounts.isEmpty()) {
+            for (String category : List.of("CAR", "BUS", "TRUCK", "MOTORCYCLE", "BICYCLE", "OTHER", "UNKNOWN")) {
+                categoryCounts.put(category, 0L);
+            }
         }
 
         List<Map<String, Object>> result = new ArrayList<>();

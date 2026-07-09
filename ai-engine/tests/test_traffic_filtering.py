@@ -12,15 +12,16 @@ class TestTrafficFiltering:
     """Phase 1: Only traffic classes enter the pipeline. People/household objects rejected."""
 
     def test_only_traffic_classes_accepted(self):
-        """Only COCO classes 1-5 (bicycle/motorcycle/car/bus/truck) should be accepted."""
+        """Only actual YOLOv8n COCO traffic vehicle classes should be accepted.
+        Verified: class_id=1=bicycle, 2=car, 3=motorcycle, 5=bus, 7=truck."""
         assert 1 in ACCEPTED_COCO_CLASSES  # bicycle
-        assert 2 in ACCEPTED_COCO_CLASSES  # motorcycle
-        assert 3 in ACCEPTED_COCO_CLASSES  # car
-        assert 4 in ACCEPTED_COCO_CLASSES  # bus
-        assert 5 in ACCEPTED_COCO_CLASSES  # truck
+        assert 2 in ACCEPTED_COCO_CLASSES  # car
+        assert 3 in ACCEPTED_COCO_CLASSES  # motorcycle
+        assert 5 in ACCEPTED_COCO_CLASSES  # bus
+        assert 7 in ACCEPTED_COCO_CLASSES  # truck
         assert 0 not in ACCEPTED_COCO_CLASSES  # person - MUST be rejected
-        assert 6 not in ACCEPTED_COCO_CLASSES  # boat - not a traffic vehicle
-        assert 7 not in ACCEPTED_COCO_CLASSES  # train - not a traffic vehicle
+        assert 4 not in ACCEPTED_COCO_CLASSES  # airplane - not a traffic vehicle
+        assert 6 not in ACCEPTED_COCO_CLASSES  # train - not a traffic vehicle
         assert 56 not in ACCEPTED_COCO_CLASSES  # chair - not a traffic vehicle
 
     def test_no_other_fallback(self):

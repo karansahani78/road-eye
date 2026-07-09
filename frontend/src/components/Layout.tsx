@@ -9,6 +9,7 @@ const navItems = [
   { path: '/cameras', label: 'Cameras', icon: '📷' },
   { path: '/roads', label: 'Roads & Zones', icon: '🛣️' },
   { path: '/violations', label: 'Violations', icon: '🚨' },
+  { path: '/incidents', label: 'Incidents', icon: '⚠️' },
   { path: '/alerts', label: 'Alerts', icon: '🔔' },
   { path: '/map', label: 'Traffic Map', icon: '🗺️' },
   { path: '/analytics', label: 'Analytics', icon: '📈' },

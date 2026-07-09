@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     KAFKA_SPEED_ESTIMATIONS_TOPIC: str = "speed-estimations"
     KAFKA_VIOLATION_CANDIDATES_TOPIC: str = "violation-candidates"
     KAFKA_EVIDENCE_CREATED_TOPIC: str = "evidence-created"
+    KAFKA_INCIDENT_EVENTS_TOPIC: str = "incident-events"
     MODEL_PATH: str = "models/"
     MODEL_NAME: str = "yolov8n.pt"
     LOG_LEVEL: str = "INFO"
@@ -38,6 +39,10 @@ class Settings(BaseSettings):
     MAX_PROCESSING_FPS: int = 30
     FRAME_WIDTH: int = 1280
     FRAME_HEIGHT: int = 720
+
+    # Security
+    API_KEY: str = ""
+    """If non-empty, all endpoints require X-API-Key header matching this value."""
 
     class Config:
         env_file = ".env"

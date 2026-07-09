@@ -40,6 +40,7 @@ export interface Camera {
   name: string;
   description: string;
   sourceType: 'RTSP' | 'VIDEO_FILE' | 'CCTV' | 'IP_CAMERA';
+  sourceUrl: string;
   location: string;
   latitude: number;
   longitude: number;
@@ -90,6 +91,7 @@ export interface Violation {
   trackId: number;
   evidenceId: string;
   createdAt: string;
+  detectorVersion?: string;
 }
 
 export type ViolationType =
@@ -100,7 +102,9 @@ export type ViolationType =
   | 'STOP_LINE_VIOLATION'
   | 'RESTRICTED_ZONE_ENTRY'
   | 'NO_HELMET'
-  | 'TRIPLE_RIDING';
+  | 'TRIPLE_RIDING'
+  | 'BLACKLISTED_VEHICLE'
+  | 'STOLEN_VEHICLE';
 
 export type ViolationStatus =
   | 'DETECTED'
@@ -206,6 +210,28 @@ export interface CameraHealthEvent {
   inferenceLatencyMs?: number;
   recordedAt: string;
   createdAt: string;
+}
+
+export interface Incident {
+  id: string;
+  cameraId: string;
+  cameraName: string;
+  incidentType: string;
+  severity: string;
+  status: string;
+  latitude: number;
+  longitude: number;
+  description: string;
+  detectedAt: string;
+  occurredAt: string;
+  resolvedAt: string;
+  assignedTo: string;
+  assignedAt: string;
+  resolutionNotes: string;
+  source: string;
+  confidence: number;
+  createdAt: string;
+  updatedAt: string;
 }
 
 export interface StreamStatus {

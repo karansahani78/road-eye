@@ -9,11 +9,13 @@ import com.roadeye.auth.service.AuthService;
 import com.roadeye.shared.ApiResponse;
 import com.roadeye.shared.PagedResponse;
 import com.roadeye.shared.ResourceNotFoundException;
+import jakarta.persistence.criteria.Predicate;
 import jakarta.validation.Valid;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
 import org.springframework.data.domain.Pageable;
 import org.springframework.data.domain.Sort;
+import org.springframework.data.jpa.domain.Specification;
 import org.springframework.http.ResponseEntity;
 import org.springframework.security.access.prepost.PreAuthorize;
 import org.springframework.security.crypto.password.PasswordEncoder;
@@ -27,10 +29,10 @@ import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 
+import java.util.ArrayList;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
-import java.util.stream.Collectors;
 
 @RestController
 @RequestMapping("/api/v1/users")
@@ -56,26 +58,30 @@ public class UserController {
             @RequestParam(required = false) Boolean active) {
 
         Pageable pageable = PageRequest.of(page, size, Sort.by(Sort.Direction.DESC, "createdAt"));
-        Page<User> userPage = userRepository.findAll(pageable);
 
-        List<User> users = userPage.getContent();
-        if (role != null) {
-            users = users.stream().filter(u -> u.getRole() == role).collect(Collectors.toList());
-        }
-        if (active != null) {
-            users = users.stream().filter(u -> u.isActive() == active).collect(Collectors.toList());
-        }
-        if (search != null && !search.isBlank()) {
-            String s = search.toLowerCase();
-            users = users.stream()
-                    .filter(u -> u.getUsername().toLowerCase().contains(s)
-                            || u.getEmail().toLowerCase().contains(s)
-                            || (u.getFullName() != null && u.getFullName().toLowerCase().contains(s)))
-                    .collect(Collectors.toList());
-        }
+        Specification<User> spec = (root, query, cb) -> {
+            List<Predicate> predicates = new ArrayList<>();
+            if (role != null) {
+                predicates.add(cb.equal(root.get("role"), role));
+            }
+            if (active != null) {
+                predicates.add(cb.equal(root.get("active"), active));
+            }
+            if (search != null && !search.isBlank()) {
+                String pattern = "%" + search.toLowerCase() + "%";
+                predicates.add(cb.or(
+                        cb.like(cb.lower(root.get("username")), pattern),
+                        cb.like(cb.lower(root.get("email")), pattern),
+                        cb.like(cb.lower(root.get("fullName")), pattern)
+                ));
+            }
+            return cb.and(predicates.toArray(new Predicate[0]));
+        };
+
+        Page<User> userPage = userRepository.findAll(spec, pageable);
 
         PagedResponse<UserResponse> pagedResponse = PagedResponse.<UserResponse>builder()
-                .content(users.stream().map(this::mapToUserResponse).collect(Collectors.toList()))
+                .content(userPage.map(this::mapToUserResponse).getContent())
                 .page(userPage.getNumber())
                 .size(userPage.getSize())
                 .totalElements(userPage.getTotalElements())

@@ -11,7 +11,8 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.Instant;
-import java.util.UUID;
+import java.util.*;
+import java.util.stream.Collectors;
 
 @Service
 @Transactional
@@ -39,14 +40,16 @@ public class AlertService {
         } else {
             page = alertRepository.findAll(pageable);
         }
-        return page.map(this::mapToResponse);
+        Map<String, String> cameraNames = loadCameraNames(page.getContent());
+        return page.map(a -> mapToResponse(a, cameraNames));
     }
 
     @Transactional(readOnly = true)
     public AlertResponse getAlert(UUID id) {
         Alert alert = alertRepository.findById(id)
                 .orElseThrow(() -> new ResourceNotFoundException("Alert", "id", id));
-        return mapToResponse(alert);
+        Map<String, String> cameraNames = loadCameraNames(List.of(alert));
+        return mapToResponse(alert, cameraNames);
     }
 
     public Alert createAlert(Alert alert) {
@@ -59,7 +62,9 @@ public class AlertService {
         alert.setAcknowledged(true);
         alert.setAcknowledgedBy(acknowledgedBy);
         alert.setAcknowledgedAt(Instant.now());
-        return mapToResponse(alertRepository.save(alert));
+        Alert saved = alertRepository.save(alert);
+        Map<String, String> cameraNames = loadCameraNames(List.of(saved));
+        return mapToResponse(saved, cameraNames);
     }
 
     public AlertResponse resolveAlert(UUID id) {
@@ -67,28 +72,39 @@ public class AlertService {
                 .orElseThrow(() -> new ResourceNotFoundException("Alert", "id", id));
         alert.setResolved(true);
         alert.setResolvedAt(Instant.now());
-        return mapToResponse(alertRepository.save(alert));
+        Alert saved = alertRepository.save(alert);
+        Map<String, String> cameraNames = loadCameraNames(List.of(saved));
+        return mapToResponse(saved, cameraNames);
     }
 
-    private AlertResponse mapToResponse(Alert alert) {
-        String cameraName = null;
-        if (alert.getCameraId() != null) {
+    private Map<String, String> loadCameraNames(List<Alert> alerts) {
+        Set<String> cameraIds = alerts.stream()
+                .map(Alert::getCameraId)
+                .filter(Objects::nonNull)
+                .collect(Collectors.toSet());
+        if (cameraIds.isEmpty()) return new HashMap<>();
+        Map<String, String> names = new HashMap<>();
+        List<UUID> uuids = new ArrayList<>();
+        for (String cid : cameraIds) {
             try {
-                cameraName = cameraRepository.findById(UUID.fromString(alert.getCameraId()))
-                        .map(c -> c.getName())
-                        .orElse(null);
-            } catch (IllegalArgumentException ignored) {
-                // cameraId may not be a UUID
-            }
+                uuids.add(UUID.fromString(cid));
+            } catch (IllegalArgumentException ignored) {}
         }
+        if (!uuids.isEmpty()) {
+            cameraRepository.findAllById(uuids)
+                    .forEach(c -> names.put(c.getId().toString(), c.getName()));
+        }
+        return names;
+    }
 
+    private AlertResponse mapToResponse(Alert alert, Map<String, String> cameraNames) {
         return AlertResponse.builder()
                 .id(alert.getId())
                 .type(alert.getType())
                 .severity(alert.getSeverity())
                 .source(alert.getSource())
                 .cameraId(alert.getCameraId())
-                .cameraName(cameraName)
+                .cameraName(alert.getCameraId() != null ? cameraNames.get(alert.getCameraId()) : null)
                 .message(alert.getMessage())
                 .acknowledged(alert.isAcknowledged())
                 .acknowledgedBy(alert.getAcknowledgedBy())

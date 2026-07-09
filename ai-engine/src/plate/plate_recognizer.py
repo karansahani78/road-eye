@@ -77,6 +77,7 @@ class PlateRecognizer:
         best_text = None
         best_confidence = 0.0
         best_bbox = None
+        alternatives: List[str] = []
 
         for (corners, text, conf) in ocr_results:
             if conf < self.ocr_confidence_threshold:
@@ -84,6 +85,7 @@ class PlateRecognizer:
             cleaned = re.sub(r'[^A-Za-z0-9]', '', text).upper()
             if not cleaned or len(cleaned) < 3 or len(cleaned) > 15:
                 continue
+            alternatives.append(cleaned)
             if conf > best_confidence:
                 best_text = cleaned
                 best_confidence = conf
@@ -106,6 +108,9 @@ class PlateRecognizer:
             quality_score=round(best_confidence, 4),
             track_id=track_id,
             bbox=best_bbox or [x1, plate_roi_y1, x2, y2],
+            alternatives=alternatives,
+            detector_version="easyocr",
+            ocr_model_version="1.0",
         )
 
     def _normalize_plate(self, text: str) -> Tuple[str, str, float]:

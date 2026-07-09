@@ -104,7 +104,7 @@ a:hover { text-decoration: underline; }
 }
 .sidebar-toggle:hover { background: var(--bg); }
 
-.content { padding: 24px; flex: 1; min-height: 0; }
+.content { padding: 24px; flex: 1; min-height: 0; display: flex; flex-direction: column; }
 .content:has(.intelligence-map) { padding: 0; }
 
 .login-page {
@@ -519,6 +519,54 @@ pre { background: #f8fafc; padding: 12px; border-radius: var(--radius); font-siz
   object-fit: contain;
 }
 
+/* ===== Incidents Page ===== */
+.page { padding: 24px; flex: 1; }
+.badge {
+  display: inline-block; padding: 3px 8px;
+  border-radius: 12px; font-size: 11px;
+  font-weight: 600; text-transform: uppercase;
+}
+.cell-truncate {
+  max-width: 200px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap;
+}
+.total-count { font-size: 13px; color: var(--text-muted); }
+.modal-overlay {
+  position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+  background: rgba(0,0,0,0.5);
+  display: flex; align-items: center; justify-content: center;
+  z-index: 5000;
+}
+.modal {
+  background: var(--card-bg); border-radius: var(--radius);
+  box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+  width: 600px; max-width: 90vw; max-height: 80vh;
+  display: flex; flex-direction: column;
+}
+.modal-header {
+  display: flex; align-items: center;
+  justify-content: space-between;
+  padding: 16px 20px; border-bottom: 1px solid var(--border);
+}
+.modal-header h2 { margin: 0; font-size: 16px; }
+.modal-close {
+  background: none; border: none; font-size: 24px;
+  cursor: pointer; color: var(--text-muted); padding: 0; line-height: 1;
+}
+.modal-close:hover { color: var(--text); }
+.modal-body { padding: 20px; overflow-y: auto; }
+.detail-item { margin-bottom: 12px; }
+.detail-item label { display: block; font-size: 12px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 2px; }
+.detail-item span { font-size: 14px; }
+.modal-actions { margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--border); display: flex; flex-direction: column; gap: 12px; }
+.action-row { display: flex; gap: 8px; align-items: flex-start; }
+.action-row input, .action-row textarea { flex: 1; padding: 8px 12px; border: 1px solid var(--border); border-radius: var(--radius); font-size: 13px; }
+.action-row textarea { resize: vertical; min-height: 36px; }
+.btn-success { background: var(--success); color: #fff; padding: 8px 16px; border: none; border-radius: var(--radius); font-size: 14px; cursor: pointer; font-weight: 500; }
+.btn-success:hover { background: #16a34a; }
+.status-assigned { background: #eff6ff; color: #1d4ed8; }
+.status-resolved { background: #dcfce7; color: #166534; }
+
 .camera-card-footer {
   display: flex;
   align-items: center;
@@ -559,7 +607,7 @@ pre { background: #f8fafc; padding: 12px; border-radius: var(--radius); font-siz
 .empty-view p { font-size: 14px; }
 
 /* ===== Traffic Intelligence Map ===== */
-.intelligence-map { display: flex; flex-direction: column; height: 100%; }
+.intelligence-map { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 
 /* Ensure leaflet container fills the space */
 .leaflet-container { width: 100%; height: 100%; background: #ddd; }
@@ -609,7 +657,7 @@ pre { background: #f8fafc; padding: 12px; border-radius: var(--radius); font-siz
 .camera-list-name { font-size: 12px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .camera-list-meta { font-size: 10px; color: var(--text-muted); }
 .camera-list-item .status-badge { font-size: 9px; padding: 1px 6px; flex-shrink: 0; }
-.intelligence-map .map-container { flex: 1; position: relative; }
+.intelligence-map .map-container { flex: 1; position: relative; display: flex; flex-direction: column; }
 .intelligence-map .leaflet-popup-content { max-height: 400px; overflow-y: auto; margin: 10px 12px; }
 .intelligence-map .leaflet-popup-content-wrapper { border-radius: 8px; }
 .map-loading-overlay {

@@ -18,20 +18,32 @@ MAX_TRAJECTORY_POINTS = 15
 
 
 class SpeedEstimator:
-    def __init__(self):
+    def __init__(self, smoothing_factor: float = 0.3):
         self.pixels_per_meter: Optional[float] = None
         self.algorithm_version = "roadeye-speed-v1"
+        self.calibration_version: Optional[str] = None
+        self._prev_speeds: dict[int, float] = {}
+        self.smoothing_factor = smoothing_factor
 
-    def calibrate(self, reference_distance_m: float, reference_pixels: float):
+    def calibrate(self, reference_distance_m: float, reference_pixels: float,
+                  calibration_version: Optional[str] = None):
         if reference_distance_m <= 0 or reference_pixels <= 0:
             logger.warning(f"Invalid calibration values: distance={reference_distance_m}, pixels={reference_pixels}")
             return
         self.pixels_per_meter = reference_pixels / reference_distance_m
+        self.calibration_version = calibration_version
         logger.info(f"Speed calibrated: {self.pixels_per_meter:.4f} px/m "
                      f"(distance={reference_distance_m}m, pixels={reference_pixels}px)")
 
     def has_calibration(self) -> bool:
         return self.pixels_per_meter is not None and self.pixels_per_meter > 0
+
+    def cleanup(self, active_track_ids: set):
+        stale = [tid for tid in self._prev_speeds if tid not in active_track_ids]
+        for tid in stale:
+            del self._prev_speeds[tid]
+        if stale:
+            logger.debug(f"Cleaned {len(stale)} stale speed entries")
 
     def estimate(self, tracks: List[Track], frame_interval: float) -> List[SpeedMeasurement]:
         if not self.has_calibration():
@@ -78,13 +90,19 @@ class SpeedEstimator:
         confidence = min(1.0, len(recent) / MAX_TRAJECTORY_POINTS)
 
         now = datetime.now(timezone.utc)
+        smoothed = speed_kmh
+        tid = track.track_id
+        if tid in self._prev_speeds:
+            smoothed = self.smoothing_factor * speed_kmh + (1 - self.smoothing_factor) * self._prev_speeds[tid]
+        self._prev_speeds[tid] = smoothed
         return SpeedMeasurement(
-            track_id=track.track_id,
+            track_id=tid,
             speed_kmh=round(speed_kmh, 2),
-            smoothed_speed_kmh=round(speed_kmh, 2),
+            smoothed_speed_kmh=round(smoothed, 2),
             confidence=round(confidence, 4),
             distance_m=round(distance_m, 4),
             duration_ms=round(duration_s * 1000, 2),
             measured_at=now,
+            calibration_version=self.calibration_version,
             algorithm_version=self.algorithm_version,
         )

@@ -7,7 +7,7 @@ import { ApiResponse, DashboardStats } from '../types';
 const DashboardPage: React.FC = () => {
   const navigate = useNavigate();
 
-  const { data: stats, isLoading } = useQuery({
+  const { data: stats, isLoading, isError } = useQuery({
     queryKey: ['dashboard'],
     queryFn: async () => {
       const response = await api.get<ApiResponse<DashboardStats>>('/analytics/dashboard');
@@ -16,6 +16,7 @@ const DashboardPage: React.FC = () => {
   });
 
   if (isLoading) return <div className="loading">Loading dashboard...</div>;
+  if (isError) return <div className="error-message">Failed to load dashboard data.</div>;
 
   const cards = [
     { label: 'Total Cameras', value: stats?.totalCameras ?? 0, color: '#3b82f6', link: '/cameras' },
