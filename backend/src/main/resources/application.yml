@@ -8,8 +8,8 @@ spring:
     name: roadeye
   datasource:
     url: ${SPRING_DATASOURCE_URL:jdbc:postgresql://localhost:5432/roadeye}
-    username: ${SPRING_DATASOURCE_USERNAME:postgres}
-    password: ${SPRING_DATASOURCE_PASSWORD:karan143}
+    username: ${SPRING_DATASOURCE_USERNAME:roadeye}
+    password: ${SPRING_DATASOURCE_PASSWORD:roadeye_dev}
     driver-class-name: org.postgresql.Driver
     hikari:
       maximum-pool-size: 20
@@ -55,12 +55,12 @@ spring:
 
 minio:
   endpoint: ${MINIO_ENDPOINT:http://localhost:9000}
-  access-key: ${MINIO_ACCESS_KEY:minioadmin}
-  secret-key: ${MINIO_SECRET_KEY:minioadmin123}
+  access-key: ${MINIO_ACCESS_KEY:roadeye}
+  secret-key: ${MINIO_SECRET_KEY:roadeye_dev}
   bucket: ${MINIO_BUCKET:roadeye-evidence}
 
 jwt:
-  secret: ${JWT_SECRET:iofsdafijaifadsifjawpiojrew3w242342oipkofksajdf=}
+  secret: ${JWT_SECRET:roadeye-dev-jwt-secret-change-in-production-2024}
   expiration: ${JWT_EXPIRATION:86400000}
 
 cors:
@@ -72,7 +72,7 @@ ai:
 
 app:
   encryption:
-    key: ${APP_ENCRYPTION_KEY:change-me-in-production-32bytes!}
+    key: ${APP_ENCRYPTION_KEY:roadeye-dev-encryption-key-ch4ng3}
 
 geocoding:
   provider: ${GEOCODING_PROVIDER:nominatim}

@@ -18,4 +18,11 @@ public interface SpeedMeasurementRepository extends JpaRepository<SpeedMeasureme
 
     @Query("SELECT AVG(s.speedKmh) FROM SpeedMeasurement s WHERE s.cameraId = :cameraId AND s.measuredAt >= :after")
     Optional<Double> getAverageSpeedKmhByCameraSince(@Param("cameraId") String cameraId, @Param("after") Instant after);
+
+    @Query("SELECT s.cameraId, AVG(s.speedKmh) FROM SpeedMeasurement s WHERE s.cameraId IN :cameraIds AND s.measuredAt >= :after GROUP BY s.cameraId")
+    List<Object[]> getAverageSpeedKmhByCameraIdsSince(@Param("cameraIds") List<String> cameraIds, @Param("after") Instant after);
+
+    void deleteByMeasuredAtBefore(Instant cutoff);
+
+    long countByMeasuredAtBefore(Instant cutoff);
 }

@@ -215,11 +215,14 @@ class VideoProcessor:
 
             inference_start = time.time()
             try:
+                loop = asyncio.get_running_loop()
                 # Frame-skipped detection: run YOLO every DETECTION_FRAME_SKIP frames
                 detections = []
                 detect_this_frame = (self._frame_counter % self.settings.DETECTION_FRAME_SKIP == 1)
                 if detect_this_frame:
-                    detections = self.vehicle_detector.detect(frame_rgb)
+                    detections = await loop.run_in_executor(
+                        None, self.vehicle_detector.detect, frame_rgb
+                    )
                     if detections:
                         d = detections[0]
                         logger.info(f"[DETECTION] frame={self._frame_counter} raw_dets={len(detections)} "
@@ -261,7 +264,9 @@ class VideoProcessor:
                         if tid not in self._track_plates or self._track_ocr_counters[tid] >= ocr_interval:
                             if tid in self._track_plates:
                                 self._track_ocr_counters[tid] = 0
-                            track_plates = self.plate_recognizer.recognize_single(frame_rgb, trk)
+                            track_plates = await loop.run_in_executor(
+                                None, self.plate_recognizer.recognize_single, frame_rgb, trk
+                            )
                             if track_plates:
                                 plate_results.extend(track_plates)
 
@@ -458,6 +463,7 @@ class VideoProcessor:
                 "processed_frames": self.frame_count,
                 "dropped_frames": self.dropped_frames,
                 "current_fps": self.current_fps,
+                "vehicles_detected": self.vehicles_detected,
                 "inference_latency_ms": self._inference_latency_ms,
             },
             camera_id=self.camera_id,

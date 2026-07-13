@@ -12,6 +12,7 @@ import org.springframework.web.bind.annotation.*;
 
 import java.time.Duration;
 import java.time.Instant;
+import java.time.temporal.ChronoUnit;
 import java.util.*;
 
 @RestController
@@ -39,21 +40,29 @@ public class AnalyticsController {
     @GetMapping("/dashboard")
     public ResponseEntity<ApiResponse<Map<String, Object>>> getDashboard() {
         Instant now = Instant.now();
-        Instant todayStart = now.truncatedTo(java.time.temporal.ChronoUnit.DAYS);
+        Instant todayStart = now.truncatedTo(ChronoUnit.DAYS);
 
         long totalCameras = cameraRepository.count();
         long onlineCameras = cameraRepository.countByHealthStatus(Camera.HealthStatus.ONLINE);
         long offlineCameras = cameraRepository.countByHealthStatus(Camera.HealthStatus.OFFLINE);
-        long activeStreams = cameraRepository.findByActiveTrue().size();
+        long activeStreams = cameraRepository.countByActiveTrue();
         long vehiclesDetected = vehicleObservationRepository.count();
         long trafficVolumeToday = vehicleObservationRepository.countByObservedAtBetween(todayStart, now);
-        long activeViolations = violationRepository.countByStatus("PENDING_REVIEW")
-                + violationRepository.countByStatus("UNDER_REVIEW")
-                + violationRepository.countByStatus("NEEDS_ADDITIONAL_REVIEW")
-                + violationRepository.countByStatus("CONFIRMED")
-                + violationRepository.countByStatus("FORWARDED_TO_AUTHORITY");
-        long pendingReviews = violationRepository.countByStatus("PENDING_REVIEW");
-        long confirmedViolations = violationRepository.countByStatus("CONFIRMED");
+
+        // Single grouped query instead of 5 separate countByStatus calls
+        Map<String, Long> statusCounts = new HashMap<>();
+        List<Object[]> grouped = violationRepository.countGroupByStatus();
+        for (Object[] row : grouped) {
+            statusCounts.put((String) row[0], (Long) row[1]);
+        }
+
+        long activeViolations = statusCounts.getOrDefault("PENDING_REVIEW", 0L)
+                + statusCounts.getOrDefault("UNDER_REVIEW", 0L)
+                + statusCounts.getOrDefault("NEEDS_ADDITIONAL_REVIEW", 0L)
+                + statusCounts.getOrDefault("CONFIRMED", 0L)
+                + statusCounts.getOrDefault("FORWARDED_TO_AUTHORITY", 0L);
+        long pendingReviews = statusCounts.getOrDefault("PENDING_REVIEW", 0L);
+        long confirmedViolations = statusCounts.getOrDefault("CONFIRMED", 0L);
         long activeCriticalAlerts = alertRepository.countBySeverityAndAcknowledged("CRITICAL", false);
 
         Optional<Double> avgSpeed = speedMeasurementRepository.getAverageSpeedKmh();
@@ -77,20 +86,29 @@ public class AnalyticsController {
     @GetMapping("/traffic-volume")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getTrafficVolume(
             @RequestParam(defaultValue = "7d") String period) {
-        List<Map<String, Object>> result = new ArrayList<>();
         Instant now = Instant.now();
         Instant start = parsePeriod(period, now);
 
+        // Single batch query instead of N hourly queries
+        List<Object[]> hourlyCounts = vehicleObservationRepository.countByHourBetween(start, now);
+        Map<String, Long> countByHour = new LinkedHashMap<>();
+        for (Object[] row : hourlyCounts) {
+            // row[0] = truncated hour (java.sql.Timestamp from date_trunc), row[1] = count
+            String hourKey = row[0].toString().substring(0, 13); // "2026-07-09T14"
+            countByHour.merge(hourKey, (Long) row[1], Long::sum);
+        }
+
+        // Fill in zeros for missing hours
+        List<Map<String, Object>> result = new ArrayList<>();
         Instant cursor = start;
         while (cursor.isBefore(now)) {
             Instant hourEnd = cursor.plus(Duration.ofHours(1));
-            if (hourEnd.isAfter(now)) hourEnd = now;
-            long count = vehicleObservationRepository.countByObservedAtBetween(cursor, hourEnd);
+            String hourKey = cursor.toString().substring(0, 13);
+            String dateLabel = cursor.truncatedTo(ChronoUnit.DAYS).toString().substring(0, 10);
             Map<String, Object> point = new LinkedHashMap<>();
-            String dateLabel = cursor.truncatedTo(java.time.temporal.ChronoUnit.DAYS).toString().substring(0, 10);
             point.put("timestamp", cursor.toString());
             point.put("date", dateLabel);
-            point.put("count", count);
+            point.put("count", countByHour.getOrDefault(hourKey, 0L));
             result.add(point);
             cursor = hourEnd;
         }
@@ -100,10 +118,12 @@ public class AnalyticsController {
 
     @GetMapping("/vehicle-categories")
     public ResponseEntity<ApiResponse<List<Map<String, Object>>>> getVehicleCategories() {
-        List<String> categories = vehicleObservationRepository.findAllDistinctCategories();
+        // Single batch query instead of N category queries
+        List<Object[]> grouped = vehicleObservationRepository.countGroupByCategory();
         Map<String, Long> categoryCounts = new LinkedHashMap<>();
-        for (String category : categories) {
-            long count = vehicleObservationRepository.countByCategory(category);
+        for (Object[] row : grouped) {
+            String category = (String) row[0];
+            Long count = (Long) row[1];
             if (count > 0) categoryCounts.put(category, count);
         }
         if (categoryCounts.isEmpty()) {
@@ -127,17 +147,33 @@ public class AnalyticsController {
             @RequestParam(defaultValue = "30d") String period) {
         Instant now = Instant.now();
         Instant start = parsePeriod(period, now);
-        List<Map<String, Object>> result = new ArrayList<>();
 
+        // Two batch queries instead of 2*N daily queries
+        List<Object[]> dailyTotal = violationRepository.countByDayBetween(start, now);
+        List<Object[]> dailyOverspeeding = violationRepository.countByTypeAndDayBetween("OVERSPEEDING", start, now);
+
+        Map<String, Long> totalCountByDay = new LinkedHashMap<>();
+        for (Object[] row : dailyTotal) {
+            String dayKey = row[0].toString().substring(0, 10);
+            totalCountByDay.put(dayKey, (Long) row[1]);
+        }
+        Map<String, Long> overCountByDay = new LinkedHashMap<>();
+        for (Object[] row : dailyOverspeeding) {
+            String dayKey = row[0].toString().substring(0, 10);
+            overCountByDay.put(dayKey, (Long) row[1]);
+        }
+
+        // Fill in zeros for missing days
+        List<Map<String, Object>> result = new ArrayList<>();
         Instant cursor = start;
         while (cursor.isBefore(now)) {
             Instant dayEnd = cursor.plus(Duration.ofDays(1));
-            if (dayEnd.isAfter(now)) dayEnd = now;
-            long overspeeding = violationRepository.countByViolationTypeAndViolatedAtBetween("OVERSPEEDING", cursor, dayEnd);
-            long total = violationRepository.countByViolatedAtBetween(cursor, dayEnd);
+            String dayKey = cursor.truncatedTo(ChronoUnit.DAYS).toString().substring(0, 10);
+            long total = totalCountByDay.getOrDefault(dayKey, 0L);
+            long overspeeding = overCountByDay.getOrDefault(dayKey, 0L);
             long other = Math.max(0, total - overspeeding);
             Map<String, Object> point = new LinkedHashMap<>();
-            point.put("date", cursor.truncatedTo(java.time.temporal.ChronoUnit.DAYS).toString().substring(0, 10));
+            point.put("date", dayKey);
             point.put("count", total);
             point.put("overspeeding", overspeeding);
             point.put("other", other);
@@ -153,15 +189,23 @@ public class AnalyticsController {
             @RequestParam(defaultValue = "30d") String period) {
         Instant now = Instant.now();
         Instant start = parsePeriod(period, now);
-        List<Map<String, Object>> result = new ArrayList<>();
 
+        // Single batch query instead of N daily queries
+        List<Object[]> dailyCounts = violationRepository.countByTypeAndDayBetween("OVERSPEEDING", start, now);
+        Map<String, Long> countByDay = new LinkedHashMap<>();
+        for (Object[] row : dailyCounts) {
+            String dayKey = row[0].toString().substring(0, 10);
+            countByDay.put(dayKey, (Long) row[1]);
+        }
+
+        List<Map<String, Object>> result = new ArrayList<>();
         Instant cursor = start;
         while (cursor.isBefore(now)) {
             Instant dayEnd = cursor.plus(Duration.ofDays(1));
-            if (dayEnd.isAfter(now)) dayEnd = now;
-            long count = violationRepository.countByViolationTypeAndViolatedAtBetween("OVERSPEEDING", cursor, dayEnd);
+            String dayKey = cursor.truncatedTo(ChronoUnit.DAYS).toString().substring(0, 10);
+            long count = countByDay.getOrDefault(dayKey, 0L);
             Map<String, Object> point = new LinkedHashMap<>();
-            point.put("date", cursor.truncatedTo(java.time.temporal.ChronoUnit.DAYS).toString());
+            point.put("date", dayKey);
             point.put("count", count);
             result.add(point);
             cursor = dayEnd;

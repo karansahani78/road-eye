@@ -25,4 +25,7 @@ public interface AlertRepository extends JpaRepository<Alert, UUID> {
 
     @Query("SELECT a FROM Alert a WHERE a.acknowledged = false AND a.resolved = false ORDER BY a.createdAt DESC")
     List<Alert> findActiveAlerts();
+
+    @Query("SELECT a.cameraId, COUNT(a) FROM Alert a WHERE a.cameraId IN :cameraIds AND a.createdAt >= :after GROUP BY a.cameraId")
+    List<Object[]> countByCameraIdsAndCreatedAtAfter(@Param("cameraIds") List<String> cameraIds, @Param("after") Instant after);
 }

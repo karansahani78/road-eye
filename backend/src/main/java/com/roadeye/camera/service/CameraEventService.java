@@ -1,5 +1,6 @@
 package com.roadeye.camera.service;
 
+import com.roadeye.camera.dto.CameraCalibrationRequest;
 import com.roadeye.camera.entity.Camera;
 import com.roadeye.camera.entity.CameraCalibration;
 import com.roadeye.camera.entity.CameraHealthEvent;
@@ -13,7 +14,7 @@ import org.springframework.beans.factory.annotation.Value;
 import org.springframework.http.HttpEntity;
 import org.springframework.http.HttpHeaders;
 import org.springframework.http.MediaType;
-import org.springframework.http.ResponseEntity;
+import org.springframework.scheduling.annotation.Async;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
 import org.springframework.web.client.RestTemplate;
@@ -23,6 +24,7 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.UUID;
 
 @Service
 public class CameraEventService {
@@ -32,8 +34,10 @@ public class CameraEventService {
     private final CameraRepository cameraRepository;
     private final CameraCalibrationRepository cameraCalibrationRepository;
     private final CameraHealthEventRepository healthEventRepository;
+    private final CameraService cameraService;
     private final RestTemplate restTemplate;
     private final EncryptionService encryptionService;
+    private final StreamStateCache streamStateCache;
 
     @Value("${ai.service.url:http://localhost:8000}")
     private String aiServiceUrl;
@@ -41,13 +45,69 @@ public class CameraEventService {
     public CameraEventService(CameraRepository cameraRepository,
                               CameraCalibrationRepository cameraCalibrationRepository,
                               CameraHealthEventRepository healthEventRepository,
+                              CameraService cameraService,
                               RestTemplate restTemplate,
-                              EncryptionService encryptionService) {
+                              EncryptionService encryptionService,
+                              StreamStateCache streamStateCache) {
         this.cameraRepository = cameraRepository;
         this.cameraCalibrationRepository = cameraCalibrationRepository;
         this.healthEventRepository = healthEventRepository;
+        this.cameraService = cameraService;
         this.restTemplate = restTemplate;
         this.encryptionService = encryptionService;
+        this.streamStateCache = streamStateCache;
+    }
+
+    @Async
+    public void startCameraStreamAsync(Camera camera) {
+        String cameraId = camera.getId().toString();
+        try {
+            streamStateCache.markConnecting(cameraId);
+            startCameraStream(camera);
+            streamStateCache.markRunning(cameraId, null);
+        } catch (Exception e) {
+            String msg = e.getMessage() != null ? e.getMessage() : "Unknown error";
+            log.error("Async stream start failed for camera {}: {}", cameraId, msg);
+            streamStateCache.markError(cameraId, msg);
+            try {
+                cameraService.updateCameraHealth(camera.getId(), Camera.HealthStatus.ERROR);
+            } catch (Exception ex) {
+                log.warn("Failed to update camera health status: {}", ex.getMessage());
+            }
+        }
+    }
+
+    @Async
+    public void stopCameraStreamAsync(Camera camera) {
+        String cameraId = camera.getId().toString();
+        try {
+            stopCameraStream(camera);
+        } catch (Exception e) {
+            log.error("Async stream stop failed for camera {}: {}", cameraId, e.getMessage());
+        }
+    }
+
+    @Async
+    public void pushCalibrationAsync(UUID cameraId, CameraCalibrationRequest request) {
+        try {
+            // Check if stream is running before pushing
+            if (!streamStateCache.isRunning(cameraId.toString())) {
+                log.info("Calibration saved for camera {}. Stream not running, will load on next start.", cameraId);
+                return;
+            }
+
+            String calibrateUrl = aiServiceUrl + "/api/v1/streams/" + cameraId + "/calibrate";
+            Map<String, Object> calBody = new HashMap<>();
+            calBody.put("known_distance_m", request.getKnownDistance());
+            calBody.put("calibration_data", request.getCalibrationData());
+            calBody.put("reference_point1", request.getReferencePoint1());
+            calBody.put("reference_point2", request.getReferencePoint2());
+            HttpEntity<Map<String, Object>> calRequest = new HttpEntity<>(calBody, createJsonHeaders());
+            restTemplate.postForEntity(calibrateUrl, calRequest, String.class);
+            log.info("Calibration pushed to AI Engine for camera {}", cameraId);
+        } catch (Exception e) {
+            log.warn("Failed to push calibration to AI Engine for camera {}: {}", cameraId, e.getMessage());
+        }
     }
 
     public void startCameraStream(Camera camera) {
@@ -72,13 +132,10 @@ public class CameraEventService {
                 }
             }
 
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, createJsonHeaders());
+            restTemplate.postForEntity(url, request, String.class);
 
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
-            ResponseEntity<String> response = restTemplate.postForEntity(url, request, String.class);
-
-            log.info("Requested AI stream start for camera {}: {}", camera.getId(), response.getStatusCode());
+            log.info("Requested AI stream start for camera {}", camera.getId());
         } catch (org.springframework.web.client.HttpStatusCodeException e) {
             String errorBody = e.getResponseBodyAsString();
             log.error("AI Engine returned {} for camera {}: {}", e.getStatusCode(), camera.getId(), errorBody);
@@ -133,16 +190,19 @@ public class CameraEventService {
                     "camera_id", camera.getId().toString()
             );
 
-            HttpHeaders headers = new HttpHeaders();
-            headers.setContentType(MediaType.APPLICATION_JSON);
+            HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, createJsonHeaders());
+            restTemplate.postForEntity(url, request, String.class);
 
-            HttpEntity<Map<String, Object>> request = new HttpEntity<>(body, headers);
-            ResponseEntity<String> response = restTemplate.postForEntity(url, request, String.class);
-
-            log.info("Requested AI stream stop for camera {}: {}", camera.getId(), response.getStatusCode());
+            log.info("Requested AI stream stop for camera {}", camera.getId());
         } catch (Exception e) {
             log.error("Failed to stop AI stream for camera {}: {}", camera.getId(), e.getMessage());
         }
+    }
+
+    private HttpHeaders createJsonHeaders() {
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        return headers;
     }
 
     @Scheduled(fixedRate = 300000)

@@ -25,4 +25,8 @@ public interface AuditLogRepository extends JpaRepository<AuditLog, UUID> {
     Page<AuditLog> findByTargetTypeAndCreatedAtBetween(String targetType, Instant start, Instant end, Pageable pageable);
 
     Page<AuditLog> findByActorAndCreatedAtBetween(String actor, Instant start, Instant end, Pageable pageable);
+
+    void deleteByCreatedAtBefore(Instant cutoff);
+
+    long countByCreatedAtBefore(Instant cutoff);
 }

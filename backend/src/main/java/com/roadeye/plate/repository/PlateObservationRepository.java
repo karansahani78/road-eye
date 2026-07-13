@@ -10,4 +10,8 @@ public interface PlateObservationRepository extends JpaRepository<PlateObservati
     List<PlateObservation> findByNormalizedPlate(String normalizedPlate);
     List<PlateObservation> findByCameraIdAndObservedAtBetween(String cameraId, Instant start, Instant end);
     List<PlateObservation> findByCountry(String country);
+
+    void deleteByObservedAtBefore(Instant cutoff);
+
+    long countByObservedAtBefore(Instant cutoff);
 }

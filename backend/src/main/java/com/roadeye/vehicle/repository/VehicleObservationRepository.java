@@ -18,4 +18,14 @@ public interface VehicleObservationRepository extends JpaRepository<VehicleObser
 
     @Query("SELECT DISTINCT v.category FROM VehicleObservation v WHERE v.category IS NOT NULL")
     List<String> findAllDistinctCategories();
+
+    @Query("SELECT FUNCTION('date_trunc', 'hour', v.observedAt) AS hour, COUNT(v) FROM VehicleObservation v WHERE v.observedAt BETWEEN :start AND :end GROUP BY hour ORDER BY hour")
+    List<Object[]> countByHourBetween(@org.springframework.data.repository.query.Param("start") Instant start, @org.springframework.data.repository.query.Param("end") Instant end);
+
+    @Query("SELECT v.category, COUNT(v) FROM VehicleObservation v WHERE v.category IS NOT NULL GROUP BY v.category")
+    List<Object[]> countGroupByCategory();
+
+    void deleteByObservedAtBefore(Instant cutoff);
+
+    long countByObservedAtBefore(Instant cutoff);
 }

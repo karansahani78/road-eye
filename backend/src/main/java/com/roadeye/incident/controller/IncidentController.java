@@ -52,14 +52,14 @@ public class IncidentController {
     }
 
     @PostMapping
-    @PreAuthorize("hasAnyAuthority('SUPER_ADMIN', 'NATIONAL_ADMIN', 'CONTROL_ROOM_OPERATOR')")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'NATIONAL_ADMIN', 'CONTROL_ROOM_OPERATOR')")
     public ResponseEntity<ApiResponse<IncidentResponse>> createIncident(@RequestBody IncidentCreateRequest request) {
         IncidentResponse created = incidentService.createFromRequest(request);
         return ResponseEntity.ok(ApiResponse.success(created, "Incident created"));
     }
 
     @PatchMapping("/{id}")
-    @PreAuthorize("hasAnyAuthority('SUPER_ADMIN', 'NATIONAL_ADMIN', 'CONTROL_ROOM_OPERATOR', 'TRAFFIC_OFFICER')")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'NATIONAL_ADMIN', 'CONTROL_ROOM_OPERATOR', 'TRAFFIC_OFFICER')")
     public ResponseEntity<ApiResponse<IncidentResponse>> updateIncident(
             @PathVariable UUID id, @RequestBody IncidentUpdateRequest request) {
         IncidentResponse updated = incidentService.updateIncident(id, request);
@@ -67,7 +67,7 @@ public class IncidentController {
     }
 
     @PostMapping("/{id}/assign")
-    @PreAuthorize("hasAnyAuthority('SUPER_ADMIN', 'NATIONAL_ADMIN', 'CONTROL_ROOM_OPERATOR')")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'NATIONAL_ADMIN', 'CONTROL_ROOM_OPERATOR')")
     public ResponseEntity<ApiResponse<IncidentResponse>> assignIncident(
             @PathVariable UUID id, @RequestBody AssignRequest request, Authentication auth) {
         String assignee = request.getAssignee() != null && !request.getAssignee().isBlank() ? request.getAssignee() : auth.getName();
@@ -76,7 +76,7 @@ public class IncidentController {
     }
 
     @PostMapping("/{id}/resolve")
-    @PreAuthorize("hasAnyAuthority('SUPER_ADMIN', 'NATIONAL_ADMIN', 'CONTROL_ROOM_OPERATOR', 'TRAFFIC_OFFICER')")
+    @PreAuthorize("hasAnyRole('SUPER_ADMIN', 'NATIONAL_ADMIN', 'CONTROL_ROOM_OPERATOR', 'TRAFFIC_OFFICER')")
     public ResponseEntity<ApiResponse<IncidentResponse>> resolveIncident(
             @PathVariable UUID id, @RequestBody(required = false) String notes) {
         IncidentResponse updated = incidentService.resolveIncident(id, notes);

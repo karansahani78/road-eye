@@ -1,15 +1,35 @@
 # RoadEye — Agent Development Guide
 
-## Current Work State (Last Updated: 2026-07-09)
+## Current Work State (Last Updated: 2026-07-13)
 
 ### VERIFIED WORKING
 - AI Engine: YOLOv8 model loads from `models/yolov8n.pt` via ultralytics
 - AI Engine: EasyOCR initializes successfully (CPU mode)
 - AI Engine: Python 3.11 venv at `ai-engine/.venv` with all deps
 - Backend: Compiles all Java source files with JDK 21 (Temurin) — `mvn compile` verified
-- Backend: 36/36 unit tests pass across 6 test classes — `mvn test` verified
-- Frontend: Builds successfully with Vite (972KB JS + 35KB CSS) — `npm run build` verified
-- Docker: PostgreSQL, Kafka, ZooKeeper, MinIO all healthy and running
+- Backend: 43/43 unit tests pass across 6 test classes — `mvn test` verified
+- Frontend: Builds successfully with Vite (984KB JS + 42KB CSS) — `npm run build` verified
+- Frontend: TypeScript compiles cleanly — `npx tsc --noEmit` verified
+- Docker: PostgreSQL, Kafka, ZooKeeper, MinIO all configured with health checks
+
+### FIXED IN SESSION 9 (2026-07-13)
+- **CRITICAL: IncidentController @PreAuthorize** — Changed 4x `hasAnyAuthority("SUPER_ADMIN")` → `hasAnyRole("SUPER_ADMIN")`. Was completely broken because `JwtAuthenticationFilter` prepends `ROLE_` to all authorities, so `hasAnyAuthority("SUPER_ADMIN")` never matched `ROLE_SUPER_ADMIN`.
+- **CRITICAL: JwtAuthenticationFilter shouldNotFilter** — Changed from `PUBLIC_PATHS.stream().anyMatch(path::startsWith)` to `PUBLIC_PATHS.contains(path)` (exact match only). Previously `/api/v1/auth/logout` was matched by `/api/v1/auth` prefix, bypassing auth.
+- **WebSocket CORS origins** — Changed `setAllowedOriginPatterns("*")` to `setAllowedOriginPatterns(allowedOrigins.split(","))` reading from `${cors.allowed-origins}`.
+- **Hardcoded secrets** — Fixed JWT secret (`roadeye-dev-jwt-secret-change-in-production-2024`), encryption key (`roadeye-dev-encryption-key-ch4ng3`), DB defaults (`roadeye`/`roadeye_dev`), MinIO defaults (`roadeye`/`roadeye_dev`) in `application.yml`.
+- **Duplicate ViolationServiceTest removed** — Deleted `backend/src/test/java/com/roadeye/violation/ViolationServiceTest.java` (kept the more comprehensive one in `violation/service/`).
+- **Docker restart policies** — Added `restart: unless-stopped` to postgres & minio. Pinned MinIO to `RELEASE.2024-03-30T09-41-56Z`. Added `deploy.resources.limits` (memory/cpu) to all 7 services.
+- **Frontend Dockerfile** — Changed `npm install` → `npm ci` for reproducible builds.
+- **Nginx security headers** — Added X-Frame-Options, X-Content-Type-Options, X-XSS-Protection, Referrer-Policy, gzip compression, static asset caching, proxy headers.
+- **`.env.example`** — Created with all required environment variables.
+- **MonitoringContext** — Created app-level `MonitoringProvider` context that persists selected cameras, layout, and stream status across page navigations via localStorage + in-memory state. Frontend LiveMonitoringPage rewritten to consume context.
+- **Dark Theme CSS** — Complete overhaul: professional surveillance-style dark UI with `#0f1117` backgrounds, subtle borders, status indicators with dot badges, dark cards, custom scrollbars.
+- **Dashboard "Command Center"** — Redesigned with system status panel, quick actions, health metrics.
+- **Camera Onboarding** — Auto-detect source type from URL, description field, better empty states with "Add First Camera" CTA.
+- **Analytics N+1 Fixed** — `AnalyticsController` traffic volume: 168 queries (7d) → 1 batch `countByHourBetween`. Violation trends: 60 queries (30d) → 2 batch queries. Overspeeding trends: 30 queries → 1 batch. Vehicle categories: N queries → 1 `countGroupByCategory`. Dashboard: 11 queries → 6 (grouped status counts).
+- **TrafficMap N+1 Fixed** — `TrafficMapService` 4*M+6 queries → 6 batch queries (M = mapped cameras). Added `countByCameraIdsAndLastSeenAfter`, `countByCameraIdsAndViolatedAtAfter`, `countByCameraIdsAndCreatedAtAfter`, `getAverageSpeedKmhByCameraIdsSince` to repositories.
+- **Data Retention Service** — New `DataRetentionService` with `@Scheduled(cron = "0 0 3 * * *")` daily cleanup: vehicle observations (90d), vehicle tracks (30d), speed measurements (90d), camera health events (30d), audit logs (180d), plate observations (90d). Includes `getRetentionStatus()` for monitoring.
+- **Repository batch methods** — Added grouped count/delete queries to 8 repositories: VehicleObservationRepository, ViolationRepository, VehicleTrackRepository, SpeedMeasurementRepository, AlertRepository, CameraHealthEventRepository, AuditLogRepository, PlateObservationRepository.
 
 ### FIXED IN SESSION 2 (2026-07-09)
 - **Map blue background**: CSS height chain fixed (`.content` + `.intelligence-map` + `.map-container` now all use `flex: 1` instead of fragile `height: 100%`). MapContainer wrapper uses `height: 100%`. Requires Docker rebuild (`docker compose build frontend && docker compose up -d frontend`).

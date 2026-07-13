@@ -19,6 +19,8 @@ public interface ViolationRepository extends JpaRepository<Violation, UUID> {
 
     long countByStatus(String status);
 
+    long countByStatusNot(String status);
+
     long countByViolatedAtBetween(Instant start, Instant end);
 
     long countByViolationTypeAndViolatedAtBetween(String violationType, Instant start, Instant end);
@@ -27,4 +29,16 @@ public interface ViolationRepository extends JpaRepository<Violation, UUID> {
 
     @Query("SELECT v FROM Violation v WHERE v.violatedAt >= :after ORDER BY v.violatedAt DESC")
     List<Violation> findRecentViolations(@Param("after") Instant after);
+
+    @Query("SELECT FUNCTION('date_trunc', 'day', v.violatedAt) AS day, COUNT(v) FROM Violation v WHERE v.violatedAt BETWEEN :start AND :end GROUP BY day ORDER BY day")
+    List<Object[]> countByDayBetween(@Param("start") Instant start, @Param("end") Instant end);
+
+    @Query("SELECT FUNCTION('date_trunc', 'day', v.violatedAt) AS day, COUNT(v) FROM Violation v WHERE v.violationType = :type AND v.violatedAt BETWEEN :start AND :end GROUP BY day ORDER BY day")
+    List<Object[]> countByTypeAndDayBetween(@Param("type") String type, @Param("start") Instant start, @Param("end") Instant end);
+
+    @Query("SELECT v.status, COUNT(v) FROM Violation v GROUP BY v.status")
+    List<Object[]> countGroupByStatus();
+
+    @Query("SELECT v.cameraId, COUNT(v) FROM Violation v WHERE v.cameraId IN :cameraIds AND v.violatedAt >= :after GROUP BY v.cameraId")
+    List<Object[]> countByCameraIdsAndViolatedAtAfter(@Param("cameraIds") List<String> cameraIds, @Param("after") Instant after);
 }

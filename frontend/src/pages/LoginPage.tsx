@@ -34,8 +34,22 @@ const LoginPage: React.FC = () => {
     <div className="login-page">
       <div className="login-card">
         <div className="login-header">
+          <div style={{
+            width: '48px',
+            height: '48px',
+            borderRadius: '12px',
+            background: 'var(--primary-bg)',
+            display: 'flex',
+            alignItems: 'center',
+            justifyContent: 'center',
+            margin: '0 auto 16px',
+            fontSize: '20px',
+            color: 'var(--primary)',
+          }}>
+            ◆
+          </div>
           <h1>RoadEye</h1>
-          <p>Traffic Surveillance Platform</p>
+          <p>Intelligent Traffic Surveillance</p>
         </div>
         <form onSubmit={handleSubmit} className="login-form">
           {error && <div className="error-message">{error}</div>}
@@ -48,6 +62,7 @@ const LoginPage: React.FC = () => {
               onChange={(e) => setUsername(e.target.value)}
               required
               placeholder="Enter username"
+              autoComplete="username"
             />
           </div>
           <div className="form-group">
@@ -59,9 +74,10 @@ const LoginPage: React.FC = () => {
               onChange={(e) => setPassword(e.target.value)}
               required
               placeholder="Enter password"
+              autoComplete="current-password"
             />
           </div>
-          <button type="submit" className="btn-primary" disabled={loading}>
+          <button type="submit" className="btn-primary" disabled={loading} style={{ width: '100%', padding: '10px' }}>
             {loading ? 'Signing in...' : 'Sign In'}
           </button>
         </form>

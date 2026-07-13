@@ -99,24 +99,36 @@ class StreamManager:
         self._tasks.clear()
         logger.info("Stream manager stopped")
 
+    def _test_video_source(self, source_url: str) -> bool:
+        """Test if a video source can be opened. Runs in thread executor."""
+        test_cap = cv2.VideoCapture(source_url)
+        try:
+            is_opened = test_cap.isOpened()
+        finally:
+            test_cap.release()
+        return is_opened
+
     async def start_stream(self, camera_id: str, source_url: str, fps: int = 15) -> StreamStartResult:
         if camera_id in self.active_streams:
             logger.warning(f"Stream already active for camera {camera_id}")
             return StreamStartResult.STREAM_ALREADY_EXISTS
 
-        # Validate source URL BEFORE creating the processor
-        # OpenCV VideoCapture must open successfully
-        test_cap = cv2.VideoCapture(source_url)
-        if not test_cap.isOpened():
-            test_cap.release()
+        # Validate source URL WITHOUT blocking the event loop
+        loop = asyncio.get_event_loop()
+        try:
+            is_opened = await loop.run_in_executor(None, self._test_video_source, source_url)
+        except Exception as e:
+            logger.error(f"RTSP validation error for camera {camera_id}: {e}")
+            return StreamStartResult.CONNECTION_FAILED
+
+        if not is_opened:
             logger.error(f"Failed to open video source for camera {camera_id}: source_url={_sanitize_url(source_url)}")
-            error_type = _diagnose_rtsp_error(source_url)
+            error_type = await loop.run_in_executor(None, _diagnose_rtsp_error, source_url)
             if error_type == "AUTHENTICATION_FAILED":
                 return StreamStartResult.CONNECTION_FAILED_AUTH
             elif error_type == "CONNECTION_REFUSED":
                 return StreamStartResult.CONNECTION_FAILED_UNREACHABLE
             return StreamStartResult.CONNECTION_FAILED
-        test_cap.release()
 
         processor = VideoProcessor(
             camera_id=camera_id,

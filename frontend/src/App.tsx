@@ -1,6 +1,7 @@
 import React from 'react';
 import { Routes, Route, Navigate, useLocation } from 'react-router-dom';
 import { AuthProvider } from './hooks/useAuth';
+import { MonitoringProvider } from './hooks/useMonitoring';
 import ProtectedRoute from './components/ProtectedRoute';
 import LoginPage from './pages/LoginPage';
 import DashboardPage from './pages/DashboardPage';
@@ -22,29 +23,31 @@ import Layout from './components/Layout';
 const App: React.FC = () => {
   return (
     <AuthProvider>
-      <Routes>
-        <Route path="/login" element={<LoginPage />} />
-        <Route element={<ProtectedRoute />}>
-          <Route element={<Layout />}>
-            <Route path="/" element={<Navigate to="/dashboard" replace />} />
-            <Route path="/dashboard" element={<DashboardPage />} />
-            <Route path="/cameras" element={<CamerasPage />} />
-            <Route path="/cameras/:id" element={<CameraDetailPage />} />
-            <Route path="/live" element={<LiveMonitoringPage />} />
-            <Route path="/roads" element={<RoadsPage />} />
-            <Route path="/violations" element={<ViolationsPage />} />
-            <Route path="/violations/:id" element={<ViolationDetailPage />} />
-            <Route path="/incidents" element={<IncidentsPage />} />
-            <Route path="/alerts" element={<AlertsPage />} />
-            <Route path="/map" element={<MapPage />} />
-            <Route path="/analytics" element={<AnalyticsPage />} />
-            <Route path="/users" element={<UsersPage />} />
-            <Route path="/audit-logs" element={<AuditLogsPage />} />
-            <Route path="/system-health" element={<SystemHealthPage />} />
+      <MonitoringProvider>
+        <Routes>
+          <Route path="/login" element={<LoginPage />} />
+          <Route element={<ProtectedRoute />}>
+            <Route element={<Layout />}>
+              <Route path="/" element={<Navigate to="/dashboard" replace />} />
+              <Route path="/dashboard" element={<DashboardPage />} />
+              <Route path="/cameras" element={<CamerasPage />} />
+              <Route path="/cameras/:id" element={<CameraDetailPage />} />
+              <Route path="/live" element={<LiveMonitoringPage />} />
+              <Route path="/roads" element={<RoadsPage />} />
+              <Route path="/violations" element={<ViolationsPage />} />
+              <Route path="/violations/:id" element={<ViolationDetailPage />} />
+              <Route path="/incidents" element={<IncidentsPage />} />
+              <Route path="/alerts" element={<AlertsPage />} />
+              <Route path="/map" element={<MapPage />} />
+              <Route path="/analytics" element={<AnalyticsPage />} />
+              <Route path="/users" element={<UsersPage />} />
+              <Route path="/audit-logs" element={<AuditLogsPage />} />
+              <Route path="/system-health" element={<SystemHealthPage />} />
+            </Route>
+            <Route path="*" element={<NotFoundPage />} />
           </Route>
-          <Route path="*" element={<NotFoundPage />} />
-        </Route>
-      </Routes>
+        </Routes>
+      </MonitoringProvider>
     </AuthProvider>
   );
 };

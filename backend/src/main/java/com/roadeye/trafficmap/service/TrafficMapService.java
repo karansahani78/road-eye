@@ -46,12 +46,12 @@ public class TrafficMapService {
         List<Camera> allCameras = cameraRepository.findByActiveTrue();
         List<Camera> mappedCameras = cameraRepository.findByLatitudeIsNotNullAndLongitudeIsNotNullAndActiveTrue();
 
-        Map<String, Camera> cameraMap = mappedCameras.stream()
+        Map<String, Camera> cameraMap = allCameras.stream()
                 .collect(Collectors.toMap(c -> c.getId().toString(), Function.identity()));
 
         long totalCameras = allCameras.size();
         long mappedCount = mappedCameras.size();
-        long unmappedCount = cameraRepository.countByLatitudeIsNullAndActiveTrue();
+        long unmappedCount = allCameras.size() - mappedCount;
         long onlineCount = cameraRepository.countByHealthStatus(Camera.HealthStatus.ONLINE);
         long offlineCount = cameraRepository.countByHealthStatus(Camera.HealthStatus.OFFLINE);
         long degradedCount = cameraRepository.countByHealthStatus(Camera.HealthStatus.DEGRADED);
@@ -60,8 +60,46 @@ public class TrafficMapService {
         long activeViolations = violationRepository.countByStatus("DETECTED");
         long unacknowledgedAlerts = alertRepository.countByAcknowledgedFalse();
 
-        List<MapCameraDTO> cameraDTOs = mappedCameras.stream()
-                .map(cam -> buildCameraDTO(cam, since))
+        // Batch queries using ALL active camera IDs (not just mapped ones)
+        List<String> cameraIds = allCameras.stream()
+                .map(c -> c.getId().toString())
+                .collect(Collectors.toList());
+
+        Map<String, Long> vehicleCounts = new HashMap<>();
+        if (!cameraIds.isEmpty()) {
+            List<Object[]> vehicleResults = vehicleTrackRepository.countByCameraIdsAndLastSeenAfter(cameraIds, since);
+            for (Object[] row : vehicleResults) {
+                vehicleCounts.put((String) row[0], (Long) row[1]);
+            }
+        }
+
+        Map<String, Long> violationCounts = new HashMap<>();
+        if (!cameraIds.isEmpty()) {
+            List<Object[]> violationResults = violationRepository.countByCameraIdsAndViolatedAtAfter(cameraIds, since);
+            for (Object[] row : violationResults) {
+                violationCounts.put((String) row[0], (Long) row[1]);
+            }
+        }
+
+        Map<String, Long> alertCounts = new HashMap<>();
+        if (!cameraIds.isEmpty()) {
+            List<Object[]> alertResults = alertRepository.countByCameraIdsAndCreatedAtAfter(cameraIds, since);
+            for (Object[] row : alertResults) {
+                alertCounts.put((String) row[0], (Long) row[1]);
+            }
+        }
+
+        Map<String, Double> avgSpeeds = new HashMap<>();
+        if (!cameraIds.isEmpty()) {
+            List<Object[]> speedResults = speedMeasurementRepository.getAverageSpeedKmhByCameraIdsSince(cameraIds, since);
+            for (Object[] row : speedResults) {
+                avgSpeeds.put((String) row[0], (Double) row[1]);
+            }
+        }
+
+        // Build camera DTOs from ALL active cameras (mapped + unmapped)
+        List<MapCameraDTO> cameraDTOs = allCameras.stream()
+                .map(cam -> buildCameraDTO(cam, since, vehicleCounts, violationCounts, alertCounts, avgSpeeds))
                 .collect(Collectors.toList());
 
         List<MapViolationDTO> violationDTOs = violationRepository.findRecentViolations(since)
@@ -83,7 +121,7 @@ public class TrafficMapService {
                 .onlineCameras((int) onlineCount)
                 .offlineCameras((int) offlineCount)
                 .degradedCameras((int) degradedCount)
-                .activeStreams((int) mappedCameras.stream().filter(c -> c.getHealthStatus() == Camera.HealthStatus.ONLINE).count())
+                .activeStreams((int) allCameras.stream().filter(c -> c.getHealthStatus() == Camera.HealthStatus.ONLINE).count())
                 .currentActiveVehicles((int) currentActiveVehicles)
                 .activeViolations((int) activeViolations)
                 .unacknowledgedAlerts((int) unacknowledgedAlerts)
@@ -97,21 +135,19 @@ public class TrafficMapService {
                 .build();
     }
 
-    private MapCameraDTO buildCameraDTO(Camera cam, Instant since) {
-        int vehiclesLast15Min = (int) vehicleTrackRepository.countByCameraIdAndLastSeenAfter(
-                cam.getId().toString(), since);
-
+    private MapCameraDTO buildCameraDTO(Camera cam, Instant since,
+                                         Map<String, Long> vehicleCounts,
+                                         Map<String, Long> violationCounts,
+                                         Map<String, Long> alertCounts,
+                                         Map<String, Double> avgSpeeds) {
+        String camId = cam.getId().toString();
+        int vehiclesLast15Min = vehicleCounts.getOrDefault(camId, 0L).intValue();
         String streamStatus = cam.getHealthStatus() == Camera.HealthStatus.ONLINE ? "RUNNING" : "STOPPED";
-        int recentViolations = (int) violationRepository.countByCameraIdAndViolatedAtAfter(
-                cam.getId().toString(), since);
-        int recentAlerts = (int) alertRepository.countByCameraIdAndCreatedAtAfter(
-                cam.getId().toString(), since);
-
+        int recentViolations = violationCounts.getOrDefault(camId, 0L).intValue();
+        int recentAlerts = alertCounts.getOrDefault(camId, 0L).intValue();
         String congestionLevel = classifyCongestion(vehiclesLast15Min);
 
-        Double avgSpeed = speedMeasurementRepository
-                .getAverageSpeedKmhByCameraSince(cam.getId().toString(), since)
-                .orElse(null);
+        Double avgSpeed = avgSpeeds.get(camId);
         boolean speedAvailable = avgSpeed != null && avgSpeed > 0;
 
         return MapCameraDTO.builder()

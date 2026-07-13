@@ -28,6 +28,10 @@ class CameraEventServiceTest {
     private RestTemplate restTemplate;
     @Mock
     private EncryptionService encryptionService;
+    @Mock
+    private CameraService cameraService;
+    @Mock
+    private StreamStateCache streamStateCache;
 
     private CameraEventService cameraEventService;
 
@@ -35,7 +39,8 @@ class CameraEventServiceTest {
     void setUp() {
         cameraEventService = new CameraEventService(
                 cameraRepository, cameraCalibrationRepository,
-                healthEventRepository, restTemplate, encryptionService);
+                healthEventRepository, cameraService, restTemplate,
+                encryptionService, streamStateCache);
     }
 
     @Test

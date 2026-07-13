@@ -16,4 +16,8 @@ public interface CameraHealthEventRepository extends JpaRepository<CameraHealthE
 
     Page<CameraHealthEvent> findByCameraIdAndRecordedAtBetweenOrderByRecordedAtDesc(
             UUID cameraId, Instant start, Instant end, Pageable pageable);
+
+    void deleteByRecordedAtBefore(Instant cutoff);
+
+    long countByRecordedAtBefore(Instant cutoff);
 }

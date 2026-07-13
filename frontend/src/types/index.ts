@@ -238,7 +238,7 @@ export interface Incident {
 export interface StreamStatus {
   camera_id: string;
   stream: {
-    status: 'RUNNING' | 'STOPPED' | 'ERROR';
+    status: 'RUNNING' | 'STOPPED' | 'ERROR' | 'STARTING' | 'CONNECTING' | 'RECONNECTING' | 'DEGRADED' | 'OFFLINE';
     fps: number;
     vehicles_detected: number;
     frame_count: number;

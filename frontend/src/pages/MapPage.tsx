@@ -523,7 +523,7 @@ const MapPage: React.FC = () => {
               onReady={handleMapReady}
             />
 
-            {filteredCameras.map(camera => (
+            {filteredCameras.filter(c => c.latitude != null && c.longitude != null).map(camera => (
               <Marker
                 key={camera.id}
                 position={[camera.latitude, camera.longitude]}

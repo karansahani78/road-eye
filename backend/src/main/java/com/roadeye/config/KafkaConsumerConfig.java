@@ -21,6 +21,7 @@ import com.roadeye.violation.entity.Violation;
 import com.roadeye.evidence.service.EvidenceService;
 import com.roadeye.violation.entity.ViolationEvidence;
 import com.roadeye.violation.repository.ViolationEvidenceRepository;
+import com.roadeye.camera.service.StreamStateCache;
 import com.roadeye.violation.service.ViolationService;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import org.slf4j.Logger;
@@ -55,6 +56,7 @@ public class KafkaConsumerConfig {
     private final CameraHealthEventRepository cameraHealthEventRepository;
     private final ViolationEvidenceRepository violationEvidenceRepository;
     private final EvidenceService evidenceService;
+    private final StreamStateCache streamStateCache;
 
     public KafkaConsumerConfig(VehicleObservationRepository vehicleObservationRepository,
                                 VehicleTrackRepository vehicleTrackRepository,
@@ -68,7 +70,8 @@ public class KafkaConsumerConfig {
                                 CameraRepository cameraRepository,
                                 CameraHealthEventRepository cameraHealthEventRepository,
                                 ViolationEvidenceRepository violationEvidenceRepository,
-                                EvidenceService evidenceService) {
+                                EvidenceService evidenceService,
+                                StreamStateCache streamStateCache) {
         this.vehicleObservationRepository = vehicleObservationRepository;
         this.vehicleTrackRepository = vehicleTrackRepository;
         this.plateObservationRepository = plateObservationRepository;
@@ -82,6 +85,7 @@ public class KafkaConsumerConfig {
         this.cameraHealthEventRepository = cameraHealthEventRepository;
         this.violationEvidenceRepository = violationEvidenceRepository;
         this.evidenceService = evidenceService;
+        this.streamStateCache = streamStateCache;
     }
 
     @KafkaListener(topics = "${kafka.topics.camera-health:camera-health}", groupId = "${spring.kafka.consumer.group-id}")
@@ -118,6 +122,24 @@ public class KafkaConsumerConfig {
             healthEvent.setInferenceLatencyMs(getDouble(payload, "inference_latency_ms"));
             healthEvent.setRecordedAt(eventTimestamp);
             cameraHealthEventRepository.save(healthEvent);
+
+            // Sync StreamStateCache with AI Engine health events — propagate actual metrics
+            double healthFps = getDouble(payload, "current_fps");
+            Long healthFramesLong = getLong(payload, "processed_frames");
+            Long healthDroppedLong = getLong(payload, "dropped_frames");
+            Long healthVehiclesLong = getLong(payload, "vehicles_detected");
+            int healthFrames = healthFramesLong != null ? healthFramesLong.intValue() : 0;
+            int healthDropped = healthDroppedLong != null ? healthDroppedLong.intValue() : 0;
+            int healthVehicles = healthVehiclesLong != null ? healthVehiclesLong.intValue() : 0;
+            if ("ONLINE".equals(status) || "DEGRADED".equals(status)) {
+                streamStateCache.updateHeartbeat(cameraId, status, getString(payload, "message"),
+                        healthFps, healthVehicles, healthFrames, healthDropped);
+            } else if ("OFFLINE".equals(status)) {
+                streamStateCache.markStopped(cameraId);
+            } else if ("UNKNOWN".equals(status)) {
+                String errMsg = getString(payload, "message");
+                streamStateCache.markError(cameraId, errMsg != null ? errMsg : "Unknown status");
+            }
 
             log.debug("Processed camera health event: {} status={}", cameraId, status);
         } catch (Exception e) {

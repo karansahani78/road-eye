@@ -16,7 +16,7 @@ const CamerasPage: React.FC = () => {
     cameraCode: '',
     name: '',
     description: '',
-    sourceType: 'RTSP' as const,
+    sourceType: 'RTSP' as string,
     sourceUrl: '',
     location: '',
     direction: '',
@@ -167,19 +167,22 @@ const CamerasPage: React.FC = () => {
       {showForm && (
         <form className="camera-form" onSubmit={handleSubmit}>
           <h3>Register New Camera</h3>
+          <p style={{ color: 'var(--text-muted)', fontSize: '13px', marginBottom: '16px' }}>
+            Add a new camera to the surveillance network. The camera will start processing automatically after registration.
+          </p>
           <div className="form-grid">
             <div className="form-group">
               <label>Camera Code *</label>
-              <input value={formData.cameraCode} onChange={(e) => setFormData({...formData, cameraCode: e.target.value})} required />
+              <input value={formData.cameraCode} onChange={(e) => setFormData({...formData, cameraCode: e.target.value})} required placeholder="e.g., CAM-001" />
             </div>
             <div className="form-group">
               <label>Name *</label>
-              <input value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} required />
+              <input value={formData.name} onChange={(e) => setFormData({...formData, name: e.target.value})} required placeholder="e.g., Main Street Camera" />
             </div>
             <div className="form-group">
               <label>Source Type</label>
               <select value={formData.sourceType} onChange={(e) => setFormData({...formData, sourceType: e.target.value as any})}>
-                <option value="RTSP">RTSP</option>
+                <option value="RTSP">RTSP Stream</option>
                 <option value="VIDEO_FILE">Video File</option>
                 <option value="CCTV">CCTV</option>
                 <option value="IP_CAMERA">IP Camera</option>
@@ -187,23 +190,42 @@ const CamerasPage: React.FC = () => {
             </div>
             <div className="form-group">
               <label>Source URL *</label>
-              <input value={formData.sourceUrl} onChange={(e) => setFormData({...formData, sourceUrl: e.target.value})} required placeholder="rtsp:// or file://" />
+              <input value={formData.sourceUrl} onChange={(e) => {
+                const url = e.target.value;
+                setFormData({...formData, sourceUrl: url});
+                // Auto-detect source type from URL
+                if (url.startsWith('rtsp://')) setFormData({...formData, sourceUrl: url, sourceType: 'RTSP'});
+                else if (url.startsWith('file://') || url.endsWith('.mp4') || url.endsWith('.avi')) setFormData({...formData, sourceUrl: url, sourceType: 'VIDEO_FILE'});
+                else if (url.startsWith('http://') || url.startsWith('https://')) setFormData({...formData, sourceUrl: url, sourceType: 'IP_CAMERA'});
+              }} required placeholder="rtsp://user:pass@ip:port/stream" />
+            </div>
+            <div className="form-group">
+              <label>Description</label>
+              <input value={formData.description || ''} onChange={(e) => setFormData({...formData, description: e.target.value})} placeholder="Optional description" />
             </div>
             <div className="form-group">
               <label>Location</label>
-              <input value={formData.location} onChange={(e) => setFormData({...formData, location: e.target.value})} />
+              <input value={formData.location} onChange={(e) => setFormData({...formData, location: e.target.value})} placeholder="e.g., Main St & 5th Ave" />
             </div>
             <div className="form-group full-width">
               <CameraLocationSection location={cameraLocation} onChange={setCameraLocation} />
             </div>
             <div className="form-group">
-              <label>FPS</label>
-              <input type="number" value={formData.processingFps} onChange={(e) => setFormData({...formData, processingFps: parseInt(e.target.value) || 15})} />
+              <label>Processing FPS</label>
+              <input type="number" min="1" max="30" value={formData.processingFps} onChange={(e) => setFormData({...formData, processingFps: parseInt(e.target.value) || 15})} />
+              <span style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px', display: 'block' }}>
+                Lower FPS reduces CPU usage. Default: 15
+              </span>
             </div>
           </div>
-          <button type="submit" className="btn-primary" disabled={createMutation.isPending}>
-            {createMutation.isPending ? 'Creating...' : 'Create Camera'}
-          </button>
+          <div style={{ display: 'flex', gap: '8px', marginTop: '16px' }}>
+            <button type="submit" className="btn-primary" disabled={createMutation.isPending}>
+              {createMutation.isPending ? 'Creating...' : 'Create Camera'}
+            </button>
+            <button type="button" className="btn-secondary" onClick={() => { setShowForm(false); resetForm(); }}>
+              Cancel
+            </button>
+          </div>
         </form>
       )}
 
@@ -262,7 +284,21 @@ const CamerasPage: React.FC = () => {
                 ))}
                 {visibleCameras.length === 0 && (
                   <tr><td colSpan={9} className="empty-table">
-                    {showInactive ? 'No cameras registered' : 'No active cameras. Toggle "Show deactivated" to view all.'}
+                    <div style={{ padding: '20px' }}>
+                      <p style={{ fontSize: '16px', fontWeight: 600, marginBottom: '8px' }}>
+                        {showInactive ? 'No cameras registered' : 'No active cameras'}
+                      </p>
+                      <p style={{ fontSize: '13px', marginBottom: '12px' }}>
+                        {showInactive
+                          ? 'Register your first camera to start surveillance.'
+                          : 'Toggle "Show deactivated" to view all cameras, or register a new one.'}
+                      </p>
+                      {!showInactive && (
+                        <button className="btn-primary" onClick={() => setShowForm(true)}>
+                          Add First Camera
+                        </button>
+                      )}
+                    </div>
                   </td></tr>
                 )}
               </tbody>
